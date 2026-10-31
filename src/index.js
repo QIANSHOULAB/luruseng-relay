@@ -77,6 +77,7 @@ export class Room {
       this.ctx.acceptWebSocket(server, [role]);
       server.send(JSON.stringify({ t: 'hello', items: this.items(), status: this.status(), pc: this.pcOnline() }));
       if (role === 'pc') this.send({ t: 'pc', on: true }, 'phone');
+      else this.send({ t: 'phone', on: true }, 'pc');     // 手机扫码连上了：电脑那边的二维码自己收起来
       return new Response(null, { status: 101, webSocket: client });
     }
 

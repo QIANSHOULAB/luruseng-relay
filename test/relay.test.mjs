@@ -58,6 +58,7 @@ test('photo goes in, PC is told at once, takes it, phone hears it was taken', as
   const phone = await ws(r, 'phone');
   const hello = await phone.next((m) => m.t === 'hello');
   assert.equal(hello.pc, true);                                  // 手机看得见电脑在线
+  assert.equal((await pc.next((m) => m.t === 'phone')).on, true); // 电脑知道手机连上了（二维码好收起来）
   const body = new Uint8Array(300_000).map((_, i) => i % 251);
   const res = await put(r, 'batch=b_abcdef&seq=1&total=2', body);
   assert.equal(res.status, 200);
