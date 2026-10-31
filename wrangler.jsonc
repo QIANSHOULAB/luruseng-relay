@@ -1,0 +1,11 @@
+{
+  // 录入僧 · 手机传图中转站。Cloudflare 从 GitHub 拉这个仓库自己部署：改了代码推上来就自动更新。
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "luruseng-relay",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": { "bindings": [{ "name": "ROOM", "class_name": "Room" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  "vars": { "ALLOW_ORIGINS": "https://qianshoulab.github.io" },
+  "observability": { "enabled": false }
+}
