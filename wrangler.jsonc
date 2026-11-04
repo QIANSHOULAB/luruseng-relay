@@ -6,7 +6,7 @@
   "compatibility_date": "2026-10-01",
   "durable_objects": { "bindings": [{ "name": "ROOM", "class_name": "Room" }, { "name": "QUOTA", "class_name": "Quota" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }, { "tag": "v2", "new_sqlite_classes": ["Quota"] }],
-  "vars": { "ALLOW_ORIGINS": "https://qianshoulab.github.io", "COUNT_IP_MAX": "40", "COUNT_ALL_MAX": "400" },   // 铁件点钞机免钥匙额度：每个 IP 每天 40 次，所有人每天 400 次
+  "vars": { "ALLOW_ORIGINS": "https://qianshoulab.github.io", "COUNT_IP_MAX": "60", "COUNT_ALL_MAX": "600" },   // 铁件点钞机免钥匙额度（按请求算，一张照片两次：数一遍 + 复查一遍）：每个 IP 每天 60 次，所有人每天 600 次
   // 谷歌钥匙是 Secret：GEMINI_KEY（备胎 GEMINI_KEY2），在 Cloudflare 后台 Settings → Variables and Secrets 里加，不写在这里
   "workers_dev": true,                  // 地址：https://luruseng-relay.lunzigeju.workers.dev
   "preview_urls": false,                // 不要额外的预览地址

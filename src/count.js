@@ -4,16 +4,19 @@
 // 额度：每个 IP 每天、所有人每天各有上限（新加坡时间零点重置），超了回 429，网页就让用户贴自己的钥匙。
 
 export const COUNT_PROMPT = [
-  'This is a shop-floor photo of finished machined parts sitting in foam trays (boxes). Count the parts.',
+  'This is a shop-floor photo of machined parts packed in foam trays (boxes). Count every part.',
   '1. Find every tray / box / foam insert in the photo, including ones only partly visible at the image edges.',
   '   For each one give box_2d = [ymin, xmin, ymax, xmax] normalized to 0-1000, and complete = true only if the whole tray,',
   '   all four sides, is inside the photo: not cut off by the image border and not hidden behind something. If not complete, say why in cut_reason.',
-  '2. For each tray, put exactly one point [y, x] (normalized 0-1000) on every individual part in that tray.',
-  '   Work slot by slot, row by row, so none is skipped. Parts that overlap, lean, stack or share one slot each get their own point,',
-  '   placed on a visible area of that specific part. Never mark empty slots, foam, labels, paper tags, strings, tools or anything outside a tray.',
-  '3. part = a 2-4 word description of the parts.',
+  '2. Inside each tray, go through the foam slots one by one: row by row from the top, left to right in each row.',
+  '   A slot may hold one part or several. Parts can stand one behind another, lean on each other, overlap or lie end to end.',
+  '   In every slot look hard for a second part partly hidden behind, under or beside the first one, and count it too.',
+  '3. For every single part give its slot (like "r3c5" for row 3, column 5) and exactly one point [y, x] (normalized 0-1000) on a visible area of that part.',
+  '   Never mark an empty slot, foam, labels, paper tags, strings, tools or anything outside a tray.',
+  '4. part = a 2-4 word description of the parts.',
 ].join('\n');
 
+const PT = { type: 'OBJECT', properties: { slot: { type: 'STRING' }, point: { type: 'ARRAY', items: { type: 'INTEGER' } } }, required: ['point'], propertyOrdering: ['slot', 'point'] };
 export const COUNT_SCHEMA = {
   type: 'OBJECT',
   properties: {
@@ -26,7 +29,7 @@ export const COUNT_SCHEMA = {
           box_2d: { type: 'ARRAY', items: { type: 'INTEGER' } },
           complete: { type: 'BOOLEAN' },
           cut_reason: { type: 'STRING' },
-          parts: { type: 'ARRAY', items: { type: 'OBJECT', properties: { point: { type: 'ARRAY', items: { type: 'INTEGER' } } }, required: ['point'] } },
+          parts: { type: 'ARRAY', items: PT },
         },
         required: ['box_2d', 'complete', 'parts'],
         propertyOrdering: ['box_2d', 'complete', 'cut_reason', 'parts'],
@@ -37,6 +40,20 @@ export const COUNT_SCHEMA = {
   propertyOrdering: ['part', 'trays'],
 };
 
+// 第二眼（?pass=audit）：网页把托盘裁大、数过的每件点一个小品红点，这里让模型专找没点的、点错的
+export const AUDIT_PROMPT = [
+  'This is a close-up of a foam tray of machined parts. Someone already counted the parts:',
+  'every part they counted carries one small magenta dot with a white ring.',
+  'Check their work slot by slot, row by row.',
+  '1. missed: put one point [y, x] (normalized 0-1000) on every part that has NO magenta dot.',
+  '   Look hard for parts hidden behind, under or beside another part in the same slot, parts standing on edge, and parts at the tray edges.',
+  '2. extra: give the point [y, x] of every magenta dot that is NOT on a part (on foam, an empty slot, a label, a tag),',
+  '   and of every second dot on a part that already has one.',
+  'Only report what you are sure about. Empty lists are fine.',
+].join('\n');
+const XY = { type: 'OBJECT', properties: { point: { type: 'ARRAY', items: { type: 'INTEGER' } } }, required: ['point'] };
+export const AUDIT_SCHEMA = { type: 'OBJECT', properties: { missed: { type: 'ARRAY', items: XY }, extra: { type: 'ARRAY', items: XY } }, required: ['missed', 'extra'], propertyOrdering: ['missed', 'extra'] };
+
 const MAX_B64 = 4_000_000;              // 照片 base64 最长（网页缩到 2048 边、JPEG 0.85，一般 0.5–1.5MB）
 // 跟录入僧一样：Gemini 2.5 只对以前用过的账号开放，新钥匙只能用 3.x。数数先上 3.8 Flash（准），额度没了换 3.5 Flash-Lite（免费档一天 500 次）
 const MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
@@ -45,8 +62,9 @@ const GEMINI = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
 // 请求体用字符串拼，不 JSON.parse 那几 MB 的照片：免费版 Worker 每次只给 10ms CPU
 const HEAD = '{"contents":[{"role":"user","parts":[{"inline_data":{"mime_type":"image/jpeg","data":"';
-const TAIL = '"}},{"text":' + JSON.stringify(COUNT_PROMPT) + '}]}],"generationConfig":{"responseMimeType":"application/json","responseSchema":'
-  + JSON.stringify(COUNT_SCHEMA) + '}}';   // Gemini 3 起不发 temperature；输出长度用模型自己的上限
+const tail = (prompt, schema) => '"}},{"text":' + JSON.stringify(prompt) + '}]}],"generationConfig":{"responseMimeType":"application/json","responseSchema":'
+  + JSON.stringify(schema) + '}}';   // Gemini 3 起不发 temperature；输出长度用模型自己的上限
+const TAILS = { count: tail(COUNT_PROMPT, COUNT_SCHEMA), audit: tail(AUDIT_PROMPT, AUDIT_SCHEMA) };
 
 const sgDay = () => new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);   // 新加坡日期
 
@@ -73,7 +91,8 @@ export async function handleCount(req, env, h) {
   }).then((r) => r.json());
   if (!q.ok) return out({ error: { code: 'quota_' + q.why, message: 'free quota used up today' } }, 429);
 
-  const body = HEAD + b64 + TAIL;
+  const pass = new URL(req.url).searchParams.get('pass') === 'audit' ? 'audit' : 'count';
+  const body = HEAD + b64 + TAILS[pass];
   let last = { status: 502, text: JSON.stringify({ error: { code: 'upstream', message: 'cannot reach Google' } }) };
   for (const m of MODELS) {
     for (const k of keys) {

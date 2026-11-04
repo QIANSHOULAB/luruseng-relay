@@ -40,7 +40,7 @@ before(async () => {
 after(() => { try { process.kill(-dev.pid, 'SIGTERM'); } catch (e) {} dev.stdout.destroy(); dev.stderr.destroy(); fake.close(); });
 
 const jpeg = '/9j/' + 'A'.repeat(5000);
-const post = (body, origin = ORIGIN, ip = '1.1.1.1') => fetch(BASE + '/count', { method: 'POST', body, headers: { Origin: origin, 'CF-Connecting-IP': ip } });
+const post = (body, origin = ORIGIN, ip = '1.1.1.1', path = '/count') => fetch(BASE + path, { method: 'POST', body, headers: { Origin: origin, 'CF-Connecting-IP': ip } });
 
 test('别的网站来的不认', async () => {
   assert.equal((await post(jpeg, 'https://evil.example')).status, 403);
@@ -67,7 +67,8 @@ test('正常：先问 3.8 Flash，钥匙在网址里，提示词是写死的，�
   assert.equal(seen[0].key, KEY);
   const b = JSON.parse(seen[0].body);
   assert.equal(b.contents[0].parts[0].inline_data.data, jpeg);
-  assert.match(b.contents[0].parts[1].text, /Count the parts/);
+  assert.match(b.contents[0].parts[1].text, /Count every part/);
+  assert.ok(b.generationConfig.responseSchema.properties.trays);
   assert.equal(b.generationConfig.responseMimeType, 'application/json');
   assert.equal(b.generationConfig.temperature, undefined);
 });
@@ -103,4 +104,16 @@ test('一个 IP 一天超了额度回 429', async () => {
   assert.equal(r.status, 429);
   assert.equal((await r.json()).error.code, 'quota_ip');
   assert.equal((await post(jpeg, ORIGIN, '6.6.6.6')).status, 200);   // 别人不受影响
+});
+
+test('?pass=audit 用复查的提示词和格式（照样是写死的）', async () => {
+  seen = []; mode = 'ok';
+  const r = await post(jpeg, ORIGIN, '7.7.7.7', '/count?pass=audit');
+  assert.equal(r.status, 200);
+  const b = JSON.parse(seen[0].body);
+  assert.match(b.contents[0].parts[1].text, /magenta dot/);
+  assert.deepEqual(Object.keys(b.generationConfig.responseSchema.properties), ['missed', 'extra']);
+  const r2 = await post(jpeg, ORIGIN, '7.7.7.8', '/count?pass=whatever');   // 别的值一律当第一遍
+  assert.equal(r2.status, 200);
+  assert.match(JSON.parse(seen[1].body).contents[0].parts[1].text, /Count every part/);
 });
