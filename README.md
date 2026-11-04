@@ -10,3 +10,12 @@
 本地跑测试（不用 Cloudflare 账号）：`npm install && npm test`
 
 录入僧：https://qianshoulab.github.io/luruseng/
+
+## 铁件点钞机 · 免钥匙通道（/count）
+
+铁件点钞机网页（https://qianshoulab.github.io/gongshi/count/）不填钥匙时，把照片（JPEG base64）POST 到 `/count`，这里拿 Song 的谷歌钥匙问 Gemini（先 2.5 Pro，额度没了换 Flash），回答原样还回去。
+
+- 钥匙是 Cloudflare 后台的 Secret：`GEMINI_KEY`（备胎 `GEMINI_KEY2`）。没加的话 `/count` 回 503，网页让用户贴自己的钥匙。
+- 提示词和回答格式写死在 `src/count.js`，网页只能递照片；只收 JPEG，夹带引号的不收。
+- 额度（新加坡时间零点重置）：每个 IP 每天 40 次，所有人每天 400 次（`COUNT_IP_MAX`、`COUNT_ALL_MAX`），超了回 429，网页让用户贴自己的钥匙。
+- 谷歌的报错原样还回去，钥匙抹成 ***。

@@ -9,6 +9,9 @@ const MAX_STATUS = 4096;                // 电脑报的进度（加密过的）�
 const ROOM_RE = /^[A-Za-z0-9_-]{20,64}$/;
 const BATCH_RE = /^[A-Za-z0-9_-]{6,64}$/;
 
+import { handleCount, Quota } from './count.js';
+export { Quota };
+
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
 
 function cors(req, env) {                // 只认录入僧网页发来的（ALLOW_ORIGINS），别的网站拿不去用
@@ -26,6 +29,13 @@ export default {
     const url = new URL(req.url);
     if (url.pathname === '/' || url.pathname === '/ping') {
       return new Response('录入僧中转站：在。\n', { headers: { 'content-type': 'text/plain; charset=utf-8', 'Access-Control-Allow-Origin': '*' } });
+    }
+    if (url.pathname === '/count') {     // 铁件点钞机：免钥匙数工件（src/count.js）
+      const h = cors(req, env);
+      if (!h) return new Response('origin not allowed', { status: 403 });
+      h['Access-Control-Allow-Methods'] = 'POST, OPTIONS';
+      h['Access-Control-Expose-Headers'] = 'x-model';
+      return handleCount(req, env, h);
     }
     const m = url.pathname.match(/^\/r\/([^/]+)\/(ws|items|item|status)(?:\/(\d+))?$/);
     if (!m || !ROOM_RE.test(m[1])) return new Response('not found', { status: 404 });
