@@ -13,7 +13,7 @@
 
 ## 铁件点钞机 · 免钥匙通道（/count）
 
-铁件点钞机网页（https://qianshoulab.github.io/gongshi/count/）不填钥匙时，把照片（JPEG base64）POST 到 `/count`，这里拿 Song 的谷歌钥匙问 Gemini（先 2.5 Pro，额度没了换 Flash），回答原样还回去。
+铁件点钞机网页（https://qianshoulab.github.io/gongshi/count/）不填钥匙时，把照片（JPEG base64）POST 到 `/count`，这里拿 Song 的谷歌钥匙问 Gemini（先 gemini-3.8-flash，额度没了或用不了换 gemini-3.5-flash-lite；不用 2.5，新钥匙用不了），回答原样还回去。
 
 - 钥匙是 Cloudflare 后台的 Secret：`GEMINI_KEY`（备胎 `GEMINI_KEY2`）。没加的话 `/count` 回 503，网页让用户贴自己的钥匙。
 - 提示词和回答格式写死在 `src/count.js`，网页只能递照片；只收 JPEG，夹带引号的不收。

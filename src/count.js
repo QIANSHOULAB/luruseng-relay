@@ -38,13 +38,15 @@ export const COUNT_SCHEMA = {
 };
 
 const MAX_B64 = 4_000_000;              // 照片 base64 最长（网页缩到 2048 边、JPEG 0.85，一般 0.5–1.5MB）
-const MODELS = ['gemini-2.5-pro', 'gemini-2.5-flash'];   // 先 Pro，额度没了换 Flash
+// 跟录入僧一样：Gemini 2.5 只对以前用过的账号开放，新钥匙只能用 3.x。数数先上 3.8 Flash（准），额度没了换 3.5 Flash-Lite（免费档一天 500 次）
+const MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
+const NEXT = new Set([429, 500, 503, 403, 404]);   // 额度没了、谷歌忙、这把钥匙用不了这个模型：换钥匙、换模型；别的错（钥匙坏了、请求坏了）停
 const GEMINI = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
 // 请求体用字符串拼，不 JSON.parse 那几 MB 的照片：免费版 Worker 每次只给 10ms CPU
 const HEAD = '{"contents":[{"role":"user","parts":[{"inline_data":{"mime_type":"image/jpeg","data":"';
 const TAIL = '"}},{"text":' + JSON.stringify(COUNT_PROMPT) + '}]}],"generationConfig":{"responseMimeType":"application/json","responseSchema":'
-  + JSON.stringify(COUNT_SCHEMA) + ',"maxOutputTokens":32768}}';
+  + JSON.stringify(COUNT_SCHEMA) + '}}';   // Gemini 3 起不发 temperature；输出长度用模型自己的上限
 
 const sgDay = () => new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);   // 新加坡日期
 
@@ -84,9 +86,9 @@ export async function handleCount(req, env, h) {
       const text = await r.text();
       if (r.ok) return new Response(text, { status: 200, headers: { ...h, 'content-type': 'application/json', 'x-model': m } });
       last = { status: r.status, text };
-      if (!(r.status === 429 || r.status === 500 || r.status === 503)) break;   // 别的错（钥匙坏了、图有问题）换模型也没用
+      if (!NEXT.has(r.status)) break;
     }
-    if (!(last.status === 429 || last.status === 500 || last.status === 503 || last.status === 502)) break;
+    if (!(NEXT.has(last.status) || last.status === 502)) break;
   }
   // 谷歌的错原样还回去（网页显示 HTTP 状态 + message）；钥匙绝不回传
   const safe = last.text.split(keys[0]).join('***').split(keys[1] || '\u0000').join('***');

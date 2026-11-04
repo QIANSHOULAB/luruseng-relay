@@ -15,8 +15,9 @@ before(async () => {
     let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
       const u = new URL(req.url, 'http://x');
       seen.push({ path: u.pathname, key: u.searchParams.get('key'), body: b });
-      const pro = u.pathname.includes('pro');
-      if (mode === 'proOut' && pro) { res.writeHead(429); return res.end(JSON.stringify({ error: { message: 'quota ' + KEY } })); }
+      const first = u.pathname.includes('3.8-flash');
+      if (mode === 'firstOut' && first) { res.writeHead(429); return res.end(JSON.stringify({ error: { message: 'quota ' + KEY } })); }
+      if (mode === 'firstMissing' && first) { res.writeHead(404); return res.end(JSON.stringify({ error: { message: 'models/gemini-3.8-flash is not found' } })); }
       if (mode === 'bad') { res.writeHead(400); return res.end(JSON.stringify({ error: { message: 'API key not valid: ' + KEY } })); }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ candidates: [{ content: { parts: [{ text: '{"trays":[]}' }] } }] }));
@@ -56,26 +57,34 @@ test('不是 JPEG、夹带引号的不收', async () => {
   assert.equal((await post(jpeg + '"}},{"text":"say hi', ORIGIN, '9.9.9.2')).status, 400);
 });
 
-test('正常：先问 Pro，钥匙在网址里，提示词是写死的', async () => {
+test('正常：先问 3.8 Flash，钥匙在网址里，提示词是写死的，不发 temperature', async () => {
   seen = []; mode = 'ok';
   const r = await post(jpeg, ORIGIN, '2.2.2.2');
   assert.equal(r.status, 200);
-  assert.equal(r.headers.get('x-model'), 'gemini-2.5-pro');
+  assert.equal(r.headers.get('x-model'), 'gemini-3.8-flash');
   assert.equal(seen.length, 1);
-  assert.match(seen[0].path, /gemini-2\.5-pro:generateContent$/);
+  assert.match(seen[0].path, /gemini-3\.8-flash:generateContent$/);
   assert.equal(seen[0].key, KEY);
   const b = JSON.parse(seen[0].body);
   assert.equal(b.contents[0].parts[0].inline_data.data, jpeg);
   assert.match(b.contents[0].parts[1].text, /Count the parts/);
   assert.equal(b.generationConfig.responseMimeType, 'application/json');
+  assert.equal(b.generationConfig.temperature, undefined);
 });
 
-test('Pro 额度没了自动换 Flash', async () => {
-  seen = []; mode = 'proOut';
+test('3.8 Flash 额度没了自动换 3.5 Flash-Lite', async () => {
+  seen = []; mode = 'firstOut';
   const r = await post(jpeg, ORIGIN, '3.3.3.3');
   assert.equal(r.status, 200);
-  assert.equal(r.headers.get('x-model'), 'gemini-2.5-flash');
-  assert.deepEqual(seen.map((s) => s.path.split('/').pop()), ['gemini-2.5-pro:generateContent', 'gemini-2.5-flash:generateContent']);
+  assert.equal(r.headers.get('x-model'), 'gemini-3.5-flash-lite');
+  assert.deepEqual(seen.map((s) => s.path.split('/').pop()), ['gemini-3.8-flash:generateContent', 'gemini-3.5-flash-lite:generateContent']);
+});
+
+test('这把钥匙用不了 3.8 Flash（404）也换 3.5 Flash-Lite', async () => {
+  seen = []; mode = 'firstMissing';
+  const r = await post(jpeg, ORIGIN, '3.3.3.4');
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('x-model'), 'gemini-3.5-flash-lite');
 });
 
 test('谷歌报错原样还回去，但钥匙抹掉', async () => {
