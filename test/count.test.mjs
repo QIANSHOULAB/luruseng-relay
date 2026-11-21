@@ -3,6 +3,7 @@ import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import { rmSync } from 'node:fs';
 
 const PORT = 8900 + Math.floor(Math.random() * 100);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -11,6 +12,7 @@ const KEY = 'AIzaFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE00';
 let dev, fake, seen = [], mode = 'ok';
 
 before(async () => {
+  rmSync('.wrangler/count-state', { recursive: true, force: true });   // 额度按天记在这里，不清的话同一天跑第二遍就 429
   fake = http.createServer((req, res) => {          // 假谷歌：记下问了哪个模型、带没带钥匙
     let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => {
       const u = new URL(req.url, 'http://x');
