@@ -20,3 +20,26 @@
 - `?pass=audit`：第二眼。网页把数过的托盘裁大、每件点一个小品红点发过来，这里用写死的复查提示词让模型找没点的（missed）和点错的（extra）。
 - 额度（新加坡时间零点重置，按请求算，一张照片两次）：每个 IP 每天 60 次，所有人每天 600 次（`COUNT_IP_MAX`、`COUNT_ALL_MAX`），超了回 429，网页让用户贴自己的钥匙。
 - 谷歌的报错原样还回去，钥匙抹成 ***。
+
+## 一叶笺 ⇄ 大管家 · 信箱（/dgj，施工单 065）
+
+一叶笺（iPhone）和大管家（掌机）之间的双向信箱，代替 iCloud 文件夹那根慢管子。接口见 qianye 仓库 `ios/docs/大管家接口.md` 的 v2 一节。
+
+- 地址：`/dgj/<信箱号>/...`，信箱号 128 位随机（32 个小写十六进制字），知道号就能用。跟录入僧（`/r`）、点钞机（`/count`）互不相干。
+- 信两头加密（AES-256-GCM），钥匙只在手机和掌机上，站里只有密文，日志不记内容。
+- 手机 app、掌机发请求不带 Origin：不带 Origin 的只有 `/dgj` 放行；别的网站来的一律 403。
+- 两个方向：`to=pc`（手机 → 大管家）、`to=phone`（大管家 → 手机）。收信的一方连着 WebSocket 就马上推（48KB 以下的小信内容跟着推送走）；没连着就攒着，下次连上时 `hello` 里一次给全。
+- 收信的一方处理完回 ack（WebSocket 发 `{"t":"ack","seq":N}`，或 `DELETE /dgj/<信箱号>/msg/<N>`）才删；没人取的 7 天删，两头都会收到 `gone`。
+- 大管家在不在线由站里判断：掌机的 WebSocket（`?as=pc`）连着、而且 90 秒内 ping 过就算在线。手机收到 `{"t":"pc","on":…,"seen":…}`。
+- 一封最大 24MB（一行存不下就拆成 1.9MB 一片存，取的时候拼回一整封）；一个信箱没取的最多 200 封、64MB，超了回 413 / 429。
+- 掌机长连着不费额度：WebSocket 休眠（`acceptWebSocket`），文本 `ping` 由站里自动回 `pong`，不叫醒 Durable Object。
+
+| 做什么 | 怎么发 |
+|---|---|
+| 连上 | `GET /dgj/<信箱号>/ws?as=pc` 或 `?as=phone`（WebSocket）；先收到 `hello`：`{t, role, pc, pcSeen, phone, pending, items:[…]}` |
+| 寄一封 | `PUT /dgj/<信箱号>/msg?to=pc|phone&mid=<信的 id>`，正文是密文；回 `{seq, at, parts, pc, phone}`；同一个 mid 再寄回 `again:true`，不存第二份 |
+| 有新信 | 推送 `{t:"msg", item:{seq, mid, to, at, size, data?}}`（`data` 是小信的 base64 密文） |
+| 取一封 | `GET /dgj/<信箱号>/msg/<seq>`，回整封密文 |
+| 收到了 / 撤回 | WebSocket `{"t":"ack","seq":N}` 或 `DELETE /dgj/<信箱号>/msg/<seq>`；两头都收到 `{t:"gone", seq, mid, to}` |
+| 看状态 | `GET /dgj/<信箱号>/state` 或 WebSocket `{"t":"state"}` → `{pc, pcSeen, phone, pending:{pc, phone}}` |
+| 列没取的 | `GET /dgj/<信箱号>/msgs?for=pc|phone` |
