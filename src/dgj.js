@@ -119,7 +119,7 @@ export class Box {
   }
 
   // ------------------------------------------------------------------ 谁在
-  /** 大管家在不在：掌机的连接还在，而且没「ping 过又 90 秒不 ping」。seen = 最后一次见到它（在线时就是现在） */
+  /** 大管家在不在：掌机的连接还在，而且最近 90 秒里连上过或 ping 过。seen = 最后一次见到它（在线时就是现在） */
   pc(except = null) {
     const now = Date.now();
     let on = false;
@@ -129,7 +129,7 @@ export class Box {
       const t = this.ctx.getWebSocketAutoResponseTimestamp(ws);
       const a = ws.deserializeAttachment() || {};
       const last = Math.max(a.at || 0, t ? t.getTime() : 0);
-      if (!t || now - last < this.staleMs) on = true;
+      if (now - last < this.staleMs) on = true;     // 连上以后一声 ping 都没有的也照这个算（last 就是连上的时间）：掌机连上就睡了，不能一直显示在线
       else seen = Math.max(seen || 0, last);
     }
     return { on, seen: on ? now : seen };

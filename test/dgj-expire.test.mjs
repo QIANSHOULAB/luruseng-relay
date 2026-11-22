@@ -44,3 +44,19 @@ test('a butler that pinged and then went quiet counts as gone; pinging again bri
   assert.equal((await state()).pc, true);
   pc.close();
 });
+
+test('a butler that connected and never pinged counts as gone after the same time', async () => {
+  const b = newBox();
+  const state = async () => (await fetch(`${BASE}/dgj/${b}/state`)).json();
+  const pc = await socket(`${WS}/dgj/${b}/ws?as=pc`);
+  const connected = Date.now();
+  assert.equal((await state()).pc, true);                             // 刚连上，还没到 ping 的时候：算在
+  await sleep(2200);                                                  // 连上就睡了，一声 ping 都没有
+  const st = await state();
+  assert.equal(st.pc, false);
+  assert.ok(Math.abs(st.pcSeen - connected) < 1500, `pcSeen ${st.pcSeen} vs ${connected}`);
+  pc.send('ping');
+  await pc.next((m) => m.t === 'pong');
+  assert.equal((await state()).pc, true);
+  pc.close();
+});
