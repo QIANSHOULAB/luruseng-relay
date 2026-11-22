@@ -27,7 +27,7 @@ const GRACE_MS = 10_000;               // 070：接了的那台断了，等它�
 const INLINE = 48 * 1024;              // 小信（理好的字、请求的字）直接跟着推送走，省一次来回
 const INLINE_HELLO = 256 * 1024;       // 刚连上时跟着 hello 一起带过去的，最多这么多
 
-export const DGJ_PATH = /^\/dgj\/([^/]+)\/(ws|msg|msgs|state)(?:\/([^/]+))?$/;
+export const DGJ_PATH = /^\/dgj\/([^/]+)\/(ws|msg|msgs|state|replied)(?:\/([^/]+))?$/;
 
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 const rank = (who) => { const i = WHO.indexOf(who); return i < 0 ? WHO.length : i; };
@@ -270,6 +270,12 @@ export class Box {
     }
 
     if (what === 'state' && method === 'GET') return json(this.state());
+
+    if (what === 'replied' && arg && method === 'GET') {   // 070：这个请求回过手机没有（听力稿配之前先问一句，免得两台都配）
+      if (!MID_RE.test(arg)) return json({ error: 'bad re' }, 400);
+      const r = this.sql.exec('SELECT at FROM replies WHERE re = ?', arg).toArray()[0];
+      return json({ re: arg, replied: Boolean(r), at: r ? r.at : null });
+    }
 
     if (what === 'msgs' && method === 'GET') {
       const dest = url.searchParams.get('for');

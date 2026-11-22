@@ -158,6 +158,10 @@ test('two answers to one request: the phone gets only the first, even after it t
   phone.send(JSON.stringify({ t: 'ack', seq: first.seq }));
   await phone.next((m) => m.t === 'gone');
   assert.equal((await (await put(b, 'phone', 'RES-ONE-3', '&re=REQ-ONE-1')).json()).dup, true);
+  const asked = await (await fetch(`${BASE}/dgj/${b}/replied/REQ-ONE-1`)).json();   // 配之前先问一句：回过了
+  assert.deepEqual([asked.replied, asked.at], [true, first.at]);
+  assert.equal((await (await fetch(`${BASE}/dgj/${b}/replied/REQ-NONE-1`)).json()).replied, false);
+  assert.equal((await fetch(`${BASE}/dgj/${b}/replied/no`)).status, 400);
   assert.equal((await put(b, 'phone', 'RES-TWO-1', '&re=no')).status, 400);
   assert.equal((await put(b, 'phone', 'RES-TWO-2')).status, 200);    // 不带 re 的（老掌机）照旧收
   phone.close();

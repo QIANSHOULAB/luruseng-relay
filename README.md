@@ -53,3 +53,4 @@ v3（施工单 070）：电脑、掌机两台大管家连同一个信箱，寄�
 | 收到了 / 撤回 | WebSocket `{"t":"ack","seq":N}` 或 `DELETE /dgj/<信箱号>/msg/<seq>`；两头都收到 `{t:"gone", seq, mid, to}` |
 | 看状态 | `GET /dgj/<信箱号>/state` 或 WebSocket `{"t":"state"}` → `{pc, pcSeen, pcs, phone, pending:{pc, phone}}` |
 | 列没取的 | `GET /dgj/<信箱号>/msgs?for=pc|phone` |
+| 回过没有（v3） | `GET /dgj/<信箱号>/replied/<请求 id>` → `{re, replied, at}`：带这个 re 的回信收过没有（听力稿配之前先问，免得两台都配） |
