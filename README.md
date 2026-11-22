@@ -23,7 +23,16 @@
 
 ## 一叶笺 ⇄ 大管家 · 信箱（/dgj，施工单 065）
 
-一叶笺（iPhone）和大管家（掌机）之间的双向信箱，代替 iCloud 文件夹那根慢管子。接口见 qianye 仓库 `ios/docs/大管家接口.md` 的 v2 一节。
+一叶笺（iPhone）和大管家（电脑、掌机）之间的双向信箱，代替 iCloud 文件夹那根慢管子。接口见 qianye 仓库 `ios/docs/大管家接口.md` 的 v2、v3 两节。
+
+v3（施工单 070）：电脑、掌机两台大管家连同一个信箱，寄给大管家的每封信只交给一台。
+
+- 连上时说自己是谁：`?as=pc&who=desk`（电脑）、`?as=pc&who=handheld`（掌机）。不带 `who` 的老掌机照 v2 走，排在最后。
+- 挑一台在线的推过去，先电脑、后掌机；在线照旧是 90 秒内连上过或 ping 过。
+- 拿到的那台马上回「接了」：`{"t":"take","seq":N}`，站里回 `{"t":"took"}`；已经转给别的机器、或者信没了，回 `{"t":"nope","by"?,"gone"?}`，那就别干。
+- 20 秒没回「接了」，或者接了以后断了（10 秒没回来）、90 秒没 ping，转给下一台在线的。接了的信，别的机器连上来也不给。老掌机不会回「接了」，推过去就算它接了。
+- 回手机的信带 `re=<请求的 id>`：同一个请求已经回过一份，第二份回 `{"again":true,"dup":true}`，不存。
+- `hello`、`state`、推给手机的 `{"t":"pc"}` 多一个 `pcs`：哪几台在线，`["desk","handheld"]`（老掌机写 `pc`）。手机不用改，有一台在线 `pc` 就是 true。
 
 - 地址：`/dgj/<信箱号>/...`，信箱号 128 位随机（32 个小写十六进制字），知道号就能用。跟录入僧（`/r`）、点钞机（`/count`）互不相干。
 - 信两头加密（AES-256-GCM），钥匙只在手机和掌机上，站里只有密文，日志不记内容。
@@ -36,10 +45,11 @@
 
 | 做什么 | 怎么发 |
 |---|---|
-| 连上 | `GET /dgj/<信箱号>/ws?as=pc` 或 `?as=phone`（WebSocket）；先收到 `hello`：`{t, role, pc, pcSeen, phone, pending, items:[…]}` |
-| 寄一封 | `PUT /dgj/<信箱号>/msg?to=pc|phone&mid=<信的 id>`，正文是密文；回 `{seq, at, parts, pc, phone}`；同一个 mid 再寄回 `again:true`，不存第二份 |
+| 连上 | `GET /dgj/<信箱号>/ws?as=pc&who=desk|handheld` 或 `?as=phone`（WebSocket）；先收到 `hello`：`{t, v:3, role, who?, pc, pcSeen, pcs, phone, pending, items:[…]}`（大管家的 `items` 只有交给这一台的） |
+| 接了（v3） | WebSocket `{"t":"take","seq":N}` → `{"t":"took","seq":N}` 或 `{"t":"nope","seq":N,"by"?,"gone"?}` |
+| 寄一封 | `PUT /dgj/<信箱号>/msg?to=pc|phone&mid=<信的 id>[&re=<回的请求 id>]`，正文是密文；回 `{seq, at, parts, pc, phone}`；同一个 mid 再寄回 `again:true`，不存第二份；同一个 re 回过了回 `again:true, dup:true` |
 | 有新信 | 推送 `{t:"msg", item:{seq, mid, to, at, size, data?}}`（`data` 是小信的 base64 密文） |
 | 取一封 | `GET /dgj/<信箱号>/msg/<seq>`，回整封密文 |
 | 收到了 / 撤回 | WebSocket `{"t":"ack","seq":N}` 或 `DELETE /dgj/<信箱号>/msg/<seq>`；两头都收到 `{t:"gone", seq, mid, to}` |
-| 看状态 | `GET /dgj/<信箱号>/state` 或 WebSocket `{"t":"state"}` → `{pc, pcSeen, phone, pending:{pc, phone}}` |
+| 看状态 | `GET /dgj/<信箱号>/state` 或 WebSocket `{"t":"state"}` → `{pc, pcSeen, pcs, phone, pending:{pc, phone}}` |
 | 列没取的 | `GET /dgj/<信箱号>/msgs?for=pc|phone` |
