@@ -54,3 +54,23 @@ v3（施工单 070）：电脑、掌机两台大管家连同一个信箱，寄�
 | 看状态 | `GET /dgj/<信箱号>/state` 或 WebSocket `{"t":"state"}` → `{pc, pcSeen, pcs, phone, pending:{pc, phone}}` |
 | 列没取的 | `GET /dgj/<信箱号>/msgs?for=pc|phone` |
 | 回过没有（v3） | `GET /dgj/<信箱号>/replied/<请求 id>` → `{re, replied, at}`：带这个 re 的回信收过没有（听力稿配之前先问，免得两台都配） |
+
+## 录入僧 ⇄ 大管家 · 认照片（/lr，施工单 089）
+
+录入僧（网页版、电脑版）认刀单照片，先问大管家；大管家不在、没配对、60 秒没回、回了错，录入僧自己跳回 Gemini。代码在 `src/luru.js`。
+
+- 配对：录入僧点「连接大管家」输一次暗号。暗号用大管家的公钥（P-256，`GET /lr/hello` 的 `pub`）加密着过来，站里看不见；对了，大管家给这个录入僧一把它自己的钥匙（也加密着回去），以后照片、结果都用这把钥匙加密。
+- 站里只记：配上的录入僧（cid、一句「哪个浏览器、哪台电脑」、配的时间、最后一次用、用了几次、撤了没有），哪个地方输错了几次（IP 加盐哈希）。同一个地方一小时错 10 次锁一小时（`LR_FAILS`、`LR_LOCK_MS`）。
+- 照片和结果只在内存里转一手，转完就扔，不存。
+- 大管家带口令连上来（`x-lr-token`，站里只存哈希，第一台连上来的定下它）：`GET /lr/pc/ws?who=desk|handheld`。一件活只交一台：先电脑、后掌机；交过去 8 秒没来取就转下一台（`LR_TAKE_MS`）。
+- 撤掉的（`POST /lr/pc/revoke`）、站里不认识的录入僧再发照片：403，录入僧退回 Gemini。
+
+| 谁 | 做什么 | 怎么发 |
+|---|---|---|
+| 录入僧 | 大管家在不在、公钥 | `GET /lr/hello` → `{v, on, pcs, pub}` |
+| 录入僧 | 配对 | `POST /lr/pair` `{cid, epk, n, ct}` → `{ok:true, n, ct}` / `{ok:false, wrong:true, left, locked?, until?}`；锁着 429 `{locked, until}`；大管家不在 503 `{off}`；超时 504 |
+| 录入僧 | 认一张 | `POST /lr/ask` `{cid, n, ct}` → `{ok:true, n, ct, by}` / `{ok:false, forget}`；撤了 403 `{revoked}`；不认识 403 `{unknown}`；不在 503；75 秒没回 504 |
+| 大管家 | 连上、收活 | WebSocket `pc/ws?who=…`，推 `{t:"job", id, kind}`；`GET pc/job/<id>` 取（先来先得，晚了 409）；`POST pc/answer/<id>` 回 |
+| 大管家 | 公钥、共用设置、配对表、撤 | `POST pc/pub`、`GET/POST pc/conf`（大管家自己加密的）、`GET pc/state`、`POST pc/revoke {cid}|{all:true}` |
+
+网页只能碰 `hello`、`pair`、`ask`；`pc/…` 带 Origin 的一律 403。
