@@ -11,7 +11,8 @@ const BATCH_RE = /^[A-Za-z0-9_-]{6,64}$/;
 
 import { handleCount, Quota } from './count.js';
 import { handleDgj, Box, DGJ_PATH } from './dgj.js';
-export { Quota, Box };
+import { handleLuru, Luru, LR_PATH } from './luru.js';
+export { Quota, Box, Luru };
 
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
 
@@ -34,6 +35,10 @@ export default {
     if (url.pathname.startsWith('/dgj/')) {   // 一叶笺 ⇄ 大管家 信箱（src/dgj.js）：不带 Origin 的只有这条路放行
       const d = url.pathname.match(DGJ_PATH);
       return d ? handleDgj(req, env, d) : new Response('not found', { status: 404 });
+    }
+    if (url.pathname.startsWith('/lr/')) {     // 录入僧 ⇄ 大管家 认照片（src/luru.js，089）：录入僧电脑版、大管家不带 Origin
+      const l = url.pathname.match(LR_PATH);
+      return l ? handleLuru(req, env, l) : new Response('not found', { status: 404 });
     }
     if (url.pathname === '/count') {     // 铁件点钞机：免钥匙数工件（src/count.js）
       const h = cors(req, env);
