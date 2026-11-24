@@ -12,6 +12,8 @@ const BATCH_RE = /^[A-Za-z0-9_-]{6,64}$/;
 import { handleCount, Quota } from './count.js';
 import { handleDgj, Box, DGJ_PATH } from './dgj.js';
 import { handleLuru, Luru, LR_PATH } from './luru.js';
+import { Stats, clientClass } from './stats.js';
+import { guard } from './limit.js';
 export { Quota, Box, Luru };
 
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
@@ -47,11 +49,14 @@ export default {
       h['Access-Control-Expose-Headers'] = 'x-model';
       return handleCount(req, env, h);
     }
-    const m = url.pathname.match(/^\/r\/([^/]+)\/(ws|items|item|status)(?:\/(\d+))?$/);
+    const m = url.pathname.match(/^\/r\/([^/]+)\/(ws|items|item|status|stats)(?:\/(\d+))?$/);
     if (!m || !ROOM_RE.test(m[1])) return new Response('not found', { status: 404 });
     const h = cors(req, env);
     if (!h) return new Response('origin not allowed', { status: 403 });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: h });
+    const wsUp = req.headers.get('Upgrade') === 'websocket';   // 125：狂敲的在进 Durable Object 之前就挡住
+    const limited = guard(env, wsUp ? 'ws' : 'http', 'r|' + m[1] + (wsUp ? '|' + (new URL(req.url).searchParams.get('as') || '') : ''));
+    if (limited) { for (const [k, v] of Object.entries(h)) limited.headers.set(k, v); return limited; }
     const res = await env.ROOM.get(env.ROOM.idFromName(m[1])).fetch(req);
     if (res.status === 101) return res;  // WebSocket
     const out = new Response(res.body, res);
@@ -69,6 +74,7 @@ export class Room {
       at INTEGER NOT NULL, size INTEGER NOT NULL, data BLOB NOT NULL, UNIQUE (batch, seq))`);
     this.sql.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)');
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));   // 心跳不用叫醒它
+    this.stats = new Stats(ctx, 'r');   // 125：额度账，见 stats.js
   }
 
   items() { return this.sql.exec('SELECT id, batch, seq, total, at, size FROM items ORDER BY id').toArray(); }
@@ -85,7 +91,22 @@ export class Room {
     }
   }
 
+  /** 125：先记账再办 */
   async fetch(req) {
+    const url = new URL(req.url);
+    const what = url.pathname.split('/')[3];
+    const who = what === 'ws' ? (url.searchParams.get('as') === 'pc' ? 'pc' : 'phone') : clientClass(req);
+    const op = what === 'ws' ? 'ws ' + who : req.method + ' ' + what;
+    if (what === 'stats' && req.method === 'GET') {
+      this.stats.hit('GET stats', who, 200);
+      return json(this.stats.read({ r: { items: this.sql.exec('SELECT COUNT(*) AS n FROM items').one().n, sockets: this.ctx.getWebSockets().length } }));
+    }
+    const res = await this.route(req);
+    this.stats.hit(op, who, res.status);
+    return res;
+  }
+
+  async route(req) {
     const url = new URL(req.url);
     const [, , , what, arg] = url.pathname.split('/');
     const method = req.method;
@@ -151,14 +172,16 @@ export class Room {
     return new Response('not found', { status: 404 });
   }
 
-  webSocketMessage() { /* 只收心跳（自动回了）；别的不认 */ }
+  webSocketMessage() { this.stats.hit('wsmsg'); /* 只收心跳（自动回了）；别的不认 */ }
   webSocketClose(ws, code) {
+    this.stats.hit('wsclose');
     try { ws.close(code === 1005 ? 1000 : code, 'bye'); } catch (e) { /* 已经关了 */ }
     if (this.ctx.getWebSockets('pc').includes(ws)) this.send({ t: 'pc', on: this.pcOnline(ws) }, 'phone');
   }
   webSocketError(ws) { this.webSocketClose(ws, 1011); }
 
   async alarm() {                        // 放了 3 天没人取的：删掉
+    this.stats.hit('alarm');
     const cut = Date.now() - KEEP_MS;
     const old = this.sql.exec('SELECT id, batch, seq FROM items WHERE at < ?', cut).toArray();
     if (old.length) {

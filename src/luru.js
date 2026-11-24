@@ -13,6 +13,9 @@
 //   在线的都报 0（打游戏）：直接回 503 cant，录入僧换 Gemini。
 // - 撤掉的、站里不认识的录入僧发来的照片：直接回 403，录入僧退回 Gemini。
 
+import { Stats, clientClass } from './stats.js';
+import { guard } from './limit.js';
+
 const WHO = ['desk', 'handheld'];
 const ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
 const B64_RE = /^[A-Za-z0-9_-]+$/;
@@ -29,7 +32,7 @@ const MAX_ASK = 8_000_000;             // 一张照片（加密后、base64）�
 const MAX_PAIR = 8_000;
 const MAX_CONF = 8_000;
 
-export const LR_PATH = /^\/lr\/(hello|pair|ask|pc\/(?:ws|pub|state|revoke|conf|job|answer))(?:\/([A-Za-z0-9_-]+))?$/;
+export const LR_PATH = /^\/lr\/(hello|pair|ask|pc\/(?:ws|pub|state|revoke|conf|job|answer|stats))(?:\/([A-Za-z0-9_-]+))?$/;
 
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 const clampCap = (n) => { const v = Math.floor(Number(n)); return Number.isFinite(v) ? Math.min(CAP_MAX, Math.max(0, v)) : CAP; };
@@ -63,6 +66,9 @@ export async function handleLuru(req, env, m) {
   let ip = req.headers.get('CF-Connecting-IP') || '';
   if (env.LR_TEST && req.headers.get('x-test-ip')) ip = req.headers.get('x-test-ip');   // 测试：假装从不同地方来
   fwd.headers.set('x-lr-ip', ip || 'local');
+  const ws = m[1] === 'pc/ws';   // 125：狂敲的在进 Durable Object 之前就挡住（每一下进去都算一次请求）。大管家按 who 一把桶，别的按来源地址
+  const limited = guard(env, ws ? 'ws' : 'http', 'lr|' + (m[1].startsWith('pc/') ? 'pc|' + (new URL(req.url).searchParams.get('who') || req.headers.get('x-lr-who') || '') : (ip || 'local')) + (ws ? '' : '|' + m[1]));
+  if (limited) { for (const [k, v] of Object.entries(h)) limited.headers.set(k, v); return limited; }
   const room = env.LR_TEST ? (req.headers.get('x-test-room') || new URL(req.url).searchParams.get('room')) : null;
   const name = room || 'main';           // 测试：每组一个干净的房间
   const res = await env.LURU.get(env.LURU.idFromName(name)).fetch(fwd);
@@ -93,6 +99,7 @@ export class Luru {
     this.queue = [];                     // 093：两台都满，排着的活（先来先给）
     this.hold = new Set();               // 093：说了「满了」的那台，等它回下一件再给
     this.tick = null;
+    this.stats = new Stats(ctx, 'lr');   // 125：额度账，见 stats.js
   }
 
   getMeta(k) { const r = this.sql.exec('SELECT v FROM meta WHERE k = ?', k).toArray()[0]; return r ? r.v : null; }
@@ -215,9 +222,25 @@ export class Luru {
     return this.sql.exec('SELECT cid, label, at, last, uses, revoked FROM clients ORDER BY at').toArray();
   }
 
+  /** 125：先记账再办。谁：大管家带 who（desk / handheld），录入僧网页、电脑版按 User-Agent 分大类 */
   async fetch(req) {
     const url = new URL(req.url);
     const m = url.pathname.match(LR_PATH);
+    const w = url.searchParams.get('who') || req.headers.get('x-lr-who') || '';
+    const who = m[1].startsWith('pc/') ? (WHO.includes(w) ? w : 'pc?') : clientClass(req);
+    const op = (req.method + ' ' + m[1]).replace(/^(GET|POST) /, '$1 ');
+    if (m[1] === 'pc/stats' && req.method === 'GET') {            // 只给数；要大管家的口令（跟 pc/state 一样）
+      if (!(await this.pcOk(req))) { this.stats.hit(op, who, 403); return json({ error: 'not the butler' }, 403); }
+      this.stats.hit(op, who, 200);
+      const ms = this.machines();
+      return json(this.stats.read({ lr: { machines: ms.map((x) => ({ who: x.who, cap: x.cap, busy: x.busy, free: x.free })), jobs: this.jobs.size, queued: this.queue.length, sockets: this.ctx.getWebSockets().length, tick: Boolean(this.tick) } }));
+    }
+    const res = await this.route(req, url, m);
+    this.stats.hit(op, who, res.status);
+    return res;
+  }
+
+  async route(req, url, m) {
     const what = m[1], arg = m[2];
     const method = req.method;
     const ip = await sha('lr-ip/' + this.salt() + '/' + (req.headers.get('x-lr-ip') || ''));
@@ -360,10 +383,11 @@ export class Luru {
 
   /** 心跳自动回了；093 收大管家报的 {"t":"cap","n":…}（能同时认几张，打游戏 0）、{"t":"no","id":…}（满了 / 刚开始打游戏，这件不接） */
   webSocketMessage(ws, msg) {
-    if (typeof msg !== 'string' || msg.length > 300 || msg[0] !== '{') return;
-    let m;
-    try { m = JSON.parse(msg); } catch (e) { return; }
     const a = ws.deserializeAttachment() || {};
+    if (typeof msg !== 'string' || msg.length > 300 || msg[0] !== '{') { this.stats.hit('wsmsg bad', a.who || '?'); return; }
+    let m;
+    try { m = JSON.parse(msg); } catch (e) { this.stats.hit('wsmsg bad', a.who || '?'); return; }
+    this.stats.hit('wsmsg ' + (m && ['cap', 'no'].includes(m.t) ? m.t : 'other'), a.who || '?');
     if (!WHO.includes(a.who)) return;
     if (m.t === 'cap') {
       a.cap = clampCap(m.n);
@@ -382,6 +406,6 @@ export class Luru {
     }
   }
 
-  webSocketClose(ws, code) { try { ws.close(code === 1005 || code === 1006 ? 1000 : code, 'bye'); } catch (e) { /* 已经关了 */ } this.pump(); }
+  webSocketClose(ws, code) { this.stats.hit('wsclose', (ws.deserializeAttachment() || {}).who || '?'); try { ws.close(code === 1005 || code === 1006 ? 1000 : code, 'bye'); } catch (e) { /* 已经关了 */ } this.pump(); }
   webSocketError(ws) { this.webSocketClose(ws, 1011); }
 }

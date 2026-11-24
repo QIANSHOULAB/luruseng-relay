@@ -12,7 +12,10 @@
 // - 照片、配音 mp3 几 MB 一封：一行存不下就拆成几片存，取的时候拼回一整封。每个信箱有上限，防止被灌爆。
 // - 手机 app、大管家发请求不带 Origin：不带 Origin 的只有这条路放行（录入僧 /r、点钞机 /count 照旧只认网页）。
 
-const BOX_RE = /^[0-9a-f]{32}$/;
+import { Stats, clientClass } from './stats.js';
+import { guard } from './limit.js';
+
+const BOX_RE =/^[0-9a-f]{32}$/;
 const MID_RE = /^[A-Za-z0-9_-]{6,64}$/;
 const ROLES = new Set(['pc', 'phone']);
 const WHO = ['desk', 'handheld'];      // 070：先电脑、后掌机；不带 who 的老掌机排最后
@@ -27,7 +30,7 @@ const GRACE_MS = 10_000;               // 070：接了的那台断了，等它�
 const INLINE = 48 * 1024;              // 小信（理好的字、请求的字）直接跟着推送走，省一次来回
 const INLINE_HELLO = 256 * 1024;       // 刚连上时跟着 hello 一起带过去的，最多这么多
 
-export const DGJ_PATH = /^\/dgj\/([^/]+)\/(ws|msg|msgs|state|replied)(?:\/([^/]+))?$/;
+export const DGJ_PATH = /^\/dgj\/([^/]+)\/(ws|msg|msgs|state|replied|stats)(?:\/([^/]+))?$/;
 
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 const rank = (who) => { const i = WHO.indexOf(who); return i < 0 ? WHO.length : i; };
@@ -50,6 +53,10 @@ export async function handleDgj(req, env, m) {
   const h = access(req, env);
   if (!h) return new Response('origin not allowed', { status: 403 });
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: h });
+  const u = new URL(req.url);   // 125：狂敲的在进 Durable Object 之前就挡住（每一下进去都算一次请求）
+  const ws = req.headers.get('Upgrade') === 'websocket';
+  const limited = guard(env, ws ? 'ws' : 'http', ws ? `${m[1]}|${u.searchParams.get('as')}|${u.searchParams.get('who') || ''}` : m[1]);
+  if (limited) { for (const [k, v] of Object.entries(h)) limited.headers.set(k, v); return limited; }
   const res = await env.BOX.get(env.BOX.idFromName(m[1])).fetch(req);
   if (res.status === 101) return res;   // WebSocket
   const out = new Response(res.body, res);
@@ -77,6 +84,9 @@ export class Box {
     this.sql.exec('CREATE TABLE IF NOT EXISTS claims (seq INTEGER PRIMARY KEY, who TEXT NOT NULL, took INTEGER NOT NULL, at INTEGER NOT NULL, lost INTEGER, skip TEXT NOT NULL)');
     // 070：回过手机的请求（re）和回的时候，同一个请求的第二份回信不收；放 7 天
     this.sql.exec('CREATE TABLE IF NOT EXISTS replies (re TEXT PRIMARY KEY, at INTEGER NOT NULL)');
+    this.stats = new Stats(ctx, 'dgj');   // 125：额度账，见 stats.js
+    this.alarmAt = [];                    // 125：最近几次闹钟响的时间，响得太密就拉长间隔（见 alarm()）
+    this.slow = 0;                        // 125：拉长到什么时候
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));   // 心跳不叫醒它
     // 测试时用 --var 调小（DGJ_KEEP_MS 等）；线上不设，用上面的数
     const num = (k, d) => { const n = Number(env?.[k]); return Number.isFinite(n) && n > 0 ? n : d; };
@@ -221,7 +231,10 @@ export class Box {
     }
   }
 
-  /** 下回什么时候醒：最早一封放满 7 天、等「接了」满 20 秒、断了的那台等满 10 秒、接了的那台该 ping 了还没 ping */
+  /** 下回什么时候醒：最早一封放满 7 天、等「接了」满 20 秒（有下一台可转才等）、断了的那台等满 10 秒（有机器在线才等）、接了的那台该 ping 了还没 ping。
+   *  125：没有进展可做的不定闹钟。原来「断了的那台」的 10 秒一到、可是一台机器都不在线，闹钟定在 0.1 秒以后，响了又什么也做不了、再定 0.1 秒以后……
+   *  一秒十次，一直到有机器连上来；每响一次都算一次请求（一天免费 10 万次，一晚上就吃光了）。机器连上来、断开、收到信、回执的时候，
+   *  都会自己再 dispatch + schedule 一遍，所以没有进展可做的时候不用靠闹钟等。 */
   async schedule() {
     const now = Date.now();
     const when = [];
@@ -229,18 +242,51 @@ export class Box {
     if (oldest) when.push(oldest + this.keepMs + 1000);
     const replied = this.sql.exec('SELECT MIN(at) AS a FROM replies').one().a;
     if (replied) when.push(replied + this.keepMs + 1000);
-    const last = new Map(this.machines().map((m) => [m.who, m.last]));
-    for (const c of this.sql.exec('SELECT who, took, at, lost FROM claims').toArray()) {
-      if (c.lost) when.push(c.lost + this.graceMs + 100);
-      else if (!c.took) when.push(c.at + this.takeMs + 100);
-      else when.push(last.has(c.who) ? last.get(c.who) + this.staleMs + 100 : now + 1000);
+    const on = this.machines();
+    const last = new Map(on.map((m) => [m.who, m.last]));
+    for (const c of this.sql.exec('SELECT who, took, at, lost, skip FROM claims').toArray()) {
+      if (c.lost) { if (on.length) when.push(c.lost + this.graceMs + 100); continue; }   // 一台都不在：等它们连上来，连上来会自己交
+      if (!last.has(c.who)) { when.push(now + 1000); continue; }                           // 拿着的那台刚不在了、还没记「不见了」：马上记一下
+      when.push(last.get(c.who) + this.staleMs + 100);                                      // 它该 ping 了还没 ping
+      if (!c.took) {
+        const skip = c.skip ? c.skip.split(',') : [];
+        if (on.some((m) => m.who !== c.who && !skip.includes(m.who))) when.push(c.at + this.takeMs + 100);   // 有下一台可转才等「接了」
+      }
     }
-    if (when.length) await this.ctx.storage.setAlarm(Math.max(Math.min(...when), now + 100));
-    else await this.ctx.storage.deleteAlarm();
+    if (when.length) {
+      let at = Math.max(Math.min(...when), now + 100);
+      if (this.slow > now) at = Math.max(at, now + 30_000);   // 响得太密（见 alarm()）：先放慢
+      await this.ctx.storage.setAlarm(at);
+    } else await this.ctx.storage.deleteAlarm();
   }
 
   // ------------------------------------------------------------------ 请求
+  /** 125：先记账再办。op 是口的名字，who 是谁（连 WebSocket 的是 desk / handheld / phone，普通请求按 User-Agent 分大类） */
   async fetch(req) {
+    const url = new URL(req.url);
+    const what = url.pathname.split('/')[3];
+    const method = req.method;
+    let op, who;
+    if (what === 'ws') {
+      const role = url.searchParams.get('as');
+      op = 'ws ' + (ROLES.has(role) ? role : '?');
+      who = role === 'pc' ? (url.searchParams.get('who') || 'pc') : 'phone';
+    } else {
+      who = clientClass(req);
+      op = what === 'msg' ? (method === 'PUT' ? 'PUT msg>' + (url.searchParams.get('to') || '?') : (method === 'DELETE' ? 'DEL msg' : 'GET msg')) : `${method} ${what}`;
+    }
+    if (what === 'stats' && method === 'GET') {           // 只给数：次数、几封在排着、几台在线，没有信的内容、没有信箱号
+      this.stats.hit('GET stats', who, 200);
+      const c = this.sql.exec('SELECT COUNT(*) AS n, SUM(took) AS t, SUM(lost IS NOT NULL) AS l FROM claims').one();
+      return json(this.stats.read({ box: { ...this.state(), claims: c.n, took: c.t || 0, lost: c.l || 0, sockets: this.ctx.getWebSockets().length, alarm: await this.ctx.storage.getAlarm() } }));
+    }
+    let res;
+    try { res = await this.route(req); } catch (e) { this.stats.hit(op, who, 500); throw e; }
+    this.stats.hit(op, who, res.status);
+    return res;
+  }
+
+  async route(req) {
     const url = new URL(req.url);
     const [, , , what, arg] = url.pathname.split('/');
     const method = req.method;
@@ -339,9 +385,12 @@ export class Box {
   }
 
   async webSocketMessage(ws, message) {  // ping 自动回了不进这里；这里只认 ack、state、take
-    if (typeof message !== 'string' || message.length > 512) return;
+    const a0 = ws.deserializeAttachment() || {};
+    const wh = a0.who || a0.role || '?';
+    if (typeof message !== 'string' || message.length > 512) { this.stats.hit('wsmsg bad', wh); return; }
     let m;
-    try { m = JSON.parse(message); } catch (e) { return; }
+    try { m = JSON.parse(message); } catch (e) { this.stats.hit('wsmsg bad', wh); return; }
+    this.stats.hit('wsmsg ' + (m && ['ack', 'state', 'take'].includes(m.t) ? m.t : 'other'), wh);
     if (m && m.t === 'ack' && Number.isSafeInteger(m.seq)) {
       this.remove(m.seq);
       await this.schedule();
@@ -364,6 +413,7 @@ export class Box {
   async webSocketClose(ws, code) {
     try { ws.close(code === 1005 || code === 1006 ? 1000 : code, 'bye'); } catch (e) { /* 已经关了 */ }
     const a = ws.deserializeAttachment() || {};
+    this.stats.hit('wsclose', a.who || a.role || '?');
     if (a.role === 'pc') {
       const now = Date.now();
       this.setMeta('pcSeen', now);
@@ -378,6 +428,11 @@ export class Box {
   async webSocketError(ws) { await this.webSocketClose(ws, 1011); }
 
   async alarm() {                        // 放了 7 天没人取的：删掉，两头都说一声；070：到时候该转给下一台的转过去
+    this.stats.hit('alarm');
+    const t = Date.now();              // 125：10 秒里响了 20 次以上：有什么没算对，放慢 5 分钟（记一笔「alarm slowed」，读数里看得见）
+    this.alarmAt = this.alarmAt.filter((x) => t - x < 10_000);
+    this.alarmAt.push(t);
+    if (this.alarmAt.length >= 20 && this.slow < t) { this.slow = t + 300_000; this.stats.hit('alarm slowed'); }
     const cut = Date.now() - this.keepMs;
     for (const r of this.sql.exec('SELECT seq FROM msgs WHERE at < ?', cut).toArray()) this.remove(r.seq, true);
     this.sql.exec('DELETE FROM replies WHERE at < ?', cut);

@@ -1,10 +1,12 @@
 // 信箱测试用：起一个 wrangler dev（不用 Cloudflare 账号），等它好了再测；测完整组关掉。
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
+
+const WIN = process.platform === 'win32';   // 125：Windows 上 npx 是 npx.cmd，要走 shell；整组关要用 taskkill
 
 export async function startDev(port, persist, vars = []) {
   const args = ['wrangler', 'dev', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', persist];
   for (const v of vars) args.push('--var', v);
-  const dev = spawn('npx', args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: '1' }, detached: true });
+  const dev = spawn('npx', args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: '1' }, detached: !WIN, shell: WIN });
   let out = '';
   await new Promise((ok, bad) => {
     const t = setTimeout(() => bad(new Error('wrangler dev 没起来：\n' + out)), 90000);
@@ -17,7 +19,7 @@ export async function startDev(port, persist, vars = []) {
   return {
     base,
     stop() {                            // npx 底下还有 wrangler、workerd：整组一起关
-      try { process.kill(-dev.pid, 'SIGTERM'); } catch (e) { /* 已经没了 */ }
+      try { if (WIN) execSync(`taskkill /pid ${dev.pid} /T /F`, { stdio: 'ignore' }); else process.kill(-dev.pid, 'SIGTERM'); } catch (e) { /* 已经没了 */ }
       dev.stdout.destroy();
       dev.stderr.destroy();
     },

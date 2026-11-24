@@ -2,7 +2,9 @@
 // 起一个 wrangler dev，真的发请求、真的连 WebSocket。
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
+
+const WIN = process.platform === 'win32';   // 125：Windows 上 npx 要走 shell，整组关用 taskkill
 
 const PORT = 8790 + Math.floor(Math.random() * 100);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -12,7 +14,7 @@ let dev;
 
 before(async () => {
   dev = spawn('npx', ['wrangler', 'dev', '--ip', '127.0.0.1', '--port', String(PORT), '--persist-to', '.wrangler/test-state'], {
-    stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: '1' }, detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: '1' }, detached: !WIN, shell: WIN,
   });
   let out = '';
   await new Promise((ok, bad) => {
@@ -24,7 +26,7 @@ before(async () => {
   for (let i = 0; i < 50; i++) { try { if ((await fetch(BASE + '/ping')).ok) break; } catch (e) { /* 还没好 */ } await new Promise((r) => setTimeout(r, 200)); }
 });
 after(() => {                            // npx 底下还有 wrangler、workerd：整组一起关，不然测试退不出去
-  try { process.kill(-dev.pid, 'SIGTERM'); } catch (e) { /* 已经没了 */ }
+  try { if (WIN) execSync(`taskkill /pid ${dev.pid} /T /F`, { stdio: 'ignore' }); else process.kill(-dev.pid, 'SIGTERM'); } catch (e) { /* 已经没了 */ }
   dev.stdout.destroy();
   dev.stderr.destroy();
 });

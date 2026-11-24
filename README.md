@@ -74,3 +74,44 @@ v3（施工单 070）：电脑、掌机两台大管家连同一个信箱，寄�
 | 大管家 | 公钥、共用设置、配对表、撤 | `POST pc/pub`、`GET/POST pc/conf`（大管家自己加密的）、`GET pc/state`、`POST pc/revoke {cid}|{all:true}` |
 
 网页只能碰 `hello`、`pair`、`ask`；`pc/…` 带 Origin 的一律 403。
+
+## 额度账和限速（施工单 125）
+
+Cloudflare 免费档：Durable Objects 一天 10 万次请求（UTC 0 点，新加坡早上 8 点清零），超了信箱的几条路全停。11-24 下午 5 点用掉 9 成（一秒 2.7 次），查下来的头号原因在 `/dgj`：
+信箱里有一封「大管家拿了、还没回执」的信，拿着它的那台断了以后一台机器都不在线，**闹钟每 0.1 秒响一次、什么也做不了、又定下一个 0.1 秒以后**，一直响到有机器连上来；每响一次都算一次请求。
+修法：`schedule()` 只给「真有进展可做」的事定闹钟（没有机器在线就不定，机器连上来 / 断开 / 收到信 / 回执时自己会再交一遍）；另外 10 秒里响了 20 次以上就放慢 5 分钟，读数里留一笔 `alarm slowed`。测试：`test/dgj-alarm.test.mjs`。
+
+### 谁敲了多少次：读数
+
+每个 Durable Object 自己在内存里数（不花额度），一小时一格，隔 10 分钟以上或换小时才落盘（一行一次写）。**只有次数**：没有信的内容、没有信箱号、没有 IP、不存 User-Agent 原文。
+
+| 路 | 读数的口 | 谁能读 |
+| --- | --- | --- |
+| `/dgj`（一叶笺 ⇄ 大管家） | `GET /dgj/<信箱号>/stats` | 知道信箱号的人 |
+| `/lr`（录入僧 ⇄ 大管家） | `GET /lr/pc/stats?who=desk`，带 `x-lr-token` | 大管家（口令） |
+| `/r`（录入僧手机传图） | `GET /r/<房间>/stats`，带 `Origin: https://qianshoulab.github.io` | 知道房间号的网页 |
+
+回的是 JSON：`todayUTC`（今天 UTC 已经数到几次）、`sum`（所有小时合计，大的排前面）、`hours`（每小时一格）。一格的名字是 `口|谁|状态码`：
+
+- `ws pc|desk|101`、`ws phone|phone|101`：连 WebSocket（每连一次算一次请求）；谁＝desk / handheld / phone。
+- `PUT msg>pc|dagj|200`：往大管家寄信；普通请求的谁按 User-Agent 分大类：`dagj`（大管家）、`ios`（手机 app）、`web`（带 Origin 的网页）、`tool`、`other`。
+- `GET state`、`GET msgs`、`GET replied`、`DEL msg`、`GET msg`：轮询类的口，哪一个多一眼看出来。
+- `wsmsg ack|take|state|cap|no`：WebSocket 上的消息（20 条才算 1 次请求）；`wsclose`：断开。
+- `alarm`：闹钟响了（每响一次算 1 次请求）；`alarm slowed`：响得太密、放慢了。
+- 回 429 的、在 Worker 里就被限速挡掉的，不进账（没碰 Durable Object）。
+
+线上读一次：`curl https://luruseng-relay.lunzigeju.workers.dev/dgj/<信箱号>/stats | python -m json.tool`；大管家这头有现成的 `python handheld/dgjbox.py stats`（自己读配对文件，只打印数）。
+为什么自己数、不用 Workers 日志 / Analytics Engine：日志要在后台看、每条请求带完整地址（含信箱号）；Analytics Engine 要建 API token 才读得出来。
+
+### 限速
+
+挡在进 Durable Object 之前（每一下进去都算一次请求），回 `429` + `Retry-After`（几秒后再来）+ `{"error":"slow down","retry_after":N}`。水桶放在 Worker 的内存里，不花额度；Worker 可能有几个实例各数各的，所以是「挡狂敲」的护栏、不是精确额度。
+
+| 桶 | 攒 | 补 | 一天最多 |
+| --- | --- | --- | --- |
+| `/dgj` 每个信箱的普通请求 | 60 | 每 3 秒 1 张 | 约 2.9 万 |
+| `/dgj` 每个信箱每个角色的 WebSocket 连接 | 10 | 每 10 秒 1 张 | 约 8600 |
+| `/lr` 大管家按 who、录入僧按来源（+口） | 同上 | 同上 | |
+| `/r` 每个房间 | 同上 | 同上 | |
+
+`wrangler.jsonc` 的 vars 里可调：`RL_HTTP_BURST` / `RL_HTTP_EVERY_S` / `RL_WS_BURST` / `RL_WS_EVERY_S`，`RL_OFF=1` 关掉。客户端收到 429 要照 `Retry-After` 等，别马上重来。

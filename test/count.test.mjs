@@ -1,7 +1,9 @@
 // 铁件点钞机免钥匙通道：npm test 里一起跑。起一个假谷歌 + wrangler dev（带假钥匙），真发请求。
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
+
+const WIN = process.platform === 'win32';   // 125：Windows 上 npx 要走 shell，整组关用 taskkill
 import http from 'node:http';
 import { rmSync } from 'node:fs';
 
@@ -29,7 +31,7 @@ before(async () => {
   const fport = fake.address().port;
   dev = spawn('npx', ['wrangler', 'dev', '--ip', '127.0.0.1', '--port', String(PORT), '--persist-to', '.wrangler/count-state',
     '--var', 'GEMINI_KEY:' + KEY, '--var', `GEMINI_BASE:http://127.0.0.1:${fport}/models/`, '--var', 'COUNT_IP_MAX:3'], {
-    stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: '1' }, detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: '1' }, detached: !WIN, shell: WIN,
   });
   let out = '';
   await new Promise((ok, bad) => {
@@ -39,7 +41,7 @@ before(async () => {
   });
   for (let i = 0; i < 50; i++) { try { if ((await fetch(BASE + '/ping')).ok) break; } catch (e) {} await new Promise((r) => setTimeout(r, 200)); }
 });
-after(() => { try { process.kill(-dev.pid, 'SIGTERM'); } catch (e) {} dev.stdout.destroy(); dev.stderr.destroy(); fake.close(); });
+after(() => { try { if (WIN) execSync(`taskkill /pid ${dev.pid} /T /F`, { stdio: 'ignore' }); else process.kill(-dev.pid, 'SIGTERM'); } catch (e) {} dev.stdout.destroy(); dev.stderr.destroy(); fake.close(); });
 
 const jpeg = '/9j/' + 'A'.repeat(5000);
 const post = (body, origin = ORIGIN, ip = '1.1.1.1', path = '/count') => fetch(BASE + path, { method: 'POST', body, headers: { Origin: origin, 'CF-Connecting-IP': ip } });
