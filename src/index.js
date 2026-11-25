@@ -14,6 +14,7 @@ import { handleDgj, Box, DGJ_PATH } from './dgj.js';
 import { handleLuru, Luru, LR_PATH } from './luru.js';
 import { Stats, clientClass } from './stats.js';
 import { guard } from './limit.js';
+import { viaDO } from './dofail.js';
 export { Quota, Box, Luru };
 
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
@@ -57,7 +58,7 @@ export default {
     const wsUp = req.headers.get('Upgrade') === 'websocket';   // 125：狂敲的在进 Durable Object 之前就挡住
     const limited = guard(env, wsUp ? 'ws' : 'http', 'r|' + m[1] + (wsUp ? '|' + (new URL(req.url).searchParams.get('as') || '') : ''));
     if (limited) { for (const [k, v] of Object.entries(h)) limited.headers.set(k, v); return limited; }
-    const res = await env.ROOM.get(env.ROOM.idFromName(m[1])).fetch(req);
+    const res = await viaDO(env.ROOM.get(env.ROOM.idFromName(m[1])), req);   // 140：DO 出错回 503 + 原因，不崩成 1101
     if (res.status === 101) return res;  // WebSocket
     const out = new Response(res.body, res);
     for (const [k, v] of Object.entries(h)) out.headers.set(k, v);

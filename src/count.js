@@ -3,6 +3,7 @@
 // 只帮数工件：问什么（提示词、回答格式）写死在这里，网页只能递照片，别人拿去问别的问不了。
 // 额度：每个 IP 每天、所有人每天各有上限（新加坡时间零点重置），超了回 429，网页就让用户贴自己的钥匙。
 
+import { viaDO } from './dofail.js';   // 140
 export const COUNT_PROMPT = [
   'This is a shop-floor photo of machined parts packed in foam trays (boxes). Count every part.',
   '1. Find every tray / box / foam insert in the photo, including ones only partly visible at the image edges.',
@@ -85,10 +86,12 @@ export async function handleCount(req, env, h) {
   }
 
   const ip = req.headers.get('CF-Connecting-IP') || 'local';
-  const q = await env.QUOTA.get(env.QUOTA.idFromName('count')).fetch('https://quota/take', {
+  const qr = await viaDO(env.QUOTA.get(env.QUOTA.idFromName('count')), 'https://quota/take', {
     method: 'POST',
     body: JSON.stringify({ day: sgDay(), ip, ipMax: Number(env.COUNT_IP_MAX || 40), allMax: Number(env.COUNT_ALL_MAX || 400) }),
-  }).then((r) => r.json());
+  });
+  const q = await qr.json();
+  if (qr.status === 503) return out({ error: { code: q.error, message: q.message } }, 503);   // 140：DO 出错，原因照给
   if (!q.ok) return out({ error: { code: 'quota_' + q.why, message: 'free quota used up today' } }, 429);
 
   const pass = new URL(req.url).searchParams.get('pass') === 'audit' ? 'audit' : 'count';

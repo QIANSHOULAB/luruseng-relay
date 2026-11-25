@@ -15,6 +15,7 @@
 
 import { Stats, clientClass } from './stats.js';
 import { guard } from './limit.js';
+import { viaDO } from './dofail.js';
 
 const WHO = ['desk', 'handheld'];
 const ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
@@ -71,7 +72,7 @@ export async function handleLuru(req, env, m) {
   if (limited) { for (const [k, v] of Object.entries(h)) limited.headers.set(k, v); return limited; }
   const room = env.LR_TEST ? (req.headers.get('x-test-room') || new URL(req.url).searchParams.get('room')) : null;
   const name = room || 'main';           // 测试：每组一个干净的房间
-  const res = await env.LURU.get(env.LURU.idFromName(name)).fetch(fwd);
+  const res = await viaDO(env.LURU.get(env.LURU.idFromName(name)), fwd);   // 140：DO 出错回 503 + 原因，不崩成 1101
   if (res.status === 101) return res;   // WebSocket
   const out = new Response(res.body, res);
   for (const [k, v] of Object.entries(h)) out.headers.set(k, v);

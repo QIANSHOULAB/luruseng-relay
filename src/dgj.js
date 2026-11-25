@@ -14,6 +14,7 @@
 
 import { Stats, clientClass } from './stats.js';
 import { guard } from './limit.js';
+import { viaDO } from './dofail.js';
 
 const BOX_RE =/^[0-9a-f]{32}$/;
 const MID_RE = /^[A-Za-z0-9_-]{6,64}$/;
@@ -57,7 +58,7 @@ export async function handleDgj(req, env, m) {
   const ws = req.headers.get('Upgrade') === 'websocket';
   const limited = guard(env, ws ? 'ws' : 'http', ws ? `${m[1]}|${u.searchParams.get('as')}|${u.searchParams.get('who') || ''}` : m[1]);
   if (limited) { for (const [k, v] of Object.entries(h)) limited.headers.set(k, v); return limited; }
-  const res = await env.BOX.get(env.BOX.idFromName(m[1])).fetch(req);
+  const res = await viaDO(env.BOX.get(env.BOX.idFromName(m[1])), req);   // 140：DO 出错回 503 + 原因，不崩成 1101
   if (res.status === 101) return res;   // WebSocket
   const out = new Response(res.body, res);
   for (const [k, v] of Object.entries(h)) out.headers.set(k, v);
