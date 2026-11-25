@@ -81,9 +81,15 @@ Cloudflare 免费档：Durable Objects 一天 10 万次请求（UTC 0 点，新�
 信箱里有一封「大管家拿了、还没回执」的信，拿着它的那台断了以后一台机器都不在线，**闹钟每 0.1 秒响一次、什么也做不了、又定下一个 0.1 秒以后**，一直响到有机器连上来；每响一次都算一次请求。
 修法：`schedule()` 只给「真有进展可做」的事定闹钟（没有机器在线就不定，机器连上来 / 断开 / 收到信 / 回执时自己会再交一遍）；另外 10 秒里响了 20 次以上就放慢 5 分钟，读数里留一笔 `alarm slowed`。测试：`test/dgj-alarm.test.mjs`。
 
+### 额度用光时回什么（施工单 140）
+
+去 Durable Object 那一下出错（额度用光、DO 里的代码抛异常），Worker 不再崩成 Cloudflare 的 `error code: 1101`（500），回 `503` + `Retry-After` + `{"error":"do_quota"|"do_error","message":"<Cloudflare 的报错原文>"}`。
+额度用光时原文是 `Exceeded allowed volume of requests in Durable Objects free tier.`。不用登录 Cloudflare，`curl https://luruseng-relay.lunzigeju.workers.dev/dgj/00000000000000000000000000000000/state` 一下就知道是不是额度。
+Cloudflare 超额后会往账号邮箱发「Durable Objects daily operation limit 90% reached / exceeded」。注意：11-25 它晚了 25 分钟左右才解封（UTC 0:25 还是 503，0:27 通了），清零后头半小时还 503 不一定是又被吃光了。
+
 ### 谁敲了多少次：读数
 
-每个 Durable Object 自己在内存里数（不花额度），一小时一格，隔 10 分钟以上或换小时才落盘（一行一次写）。**只有次数**：没有信的内容、没有信箱号、没有 IP、不存 User-Agent 原文。
+每个 Durable Object 自己在内存里数（不花额度），一小时一格，记了一下 5 秒后落盘（5 秒里来的合成一行一次写；140 改的，原来 10 分钟才落，DO 休眠一收走就全丢）。**只有次数**：没有信的内容、没有信箱号、没有 IP、不存 User-Agent 原文。
 
 | 路 | 读数的口 | 谁能读 |
 | --- | --- | --- |
