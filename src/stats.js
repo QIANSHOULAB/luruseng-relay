@@ -1,6 +1,9 @@
 // 额度账（施工单 125）：每个 Durable Object 自己数「谁、敲了哪个口、几次」，一小时一格，只数、不记内容。
 // - 数在内存里（加一下，不花额度、不写盘）；隔 10 分钟以上、或者换了小时、或者攒了 200 下才落盘，落盘是一行（一次写）。
 //   所以落盘的写次数一天最多 144 次，不会再去吃「写行数」的额度；DO 被收走时最多丢掉最后 10 分钟没落盘的。
+// - 140：上面那条在线上几乎全丢：信箱用 WebSocket 休眠，一下请求办完 10 秒左右 DO 就被收走，10 分钟 / 200 下从来等不到，
+//   读数永远只有「刚才读数那一下」。现在记一下以后 5 秒落一次盘（5 秒里再来的一起落，一个 DO 最多 5 秒一次写）；
+//   DO 本来就要 10 秒才休眠，多等这 5 秒不多占时长。
 // - 一格的名字：<口>[|<谁>][|<状态码>]，例如 「PUT msg>pc|dagj|200」「ws pc|desk|101」「alarm」。
 //   谁：连 WebSocket 的是 desk / handheld / phone；普通请求按 User-Agent 分大类（dagj＝大管家、ios＝手机 app、web＝带 Origin 的网页、other）。
 //   只记大类，不记 User-Agent 原文、不记 IP、不记信箱号全文、不记信的内容。
@@ -12,6 +15,7 @@ const HOUR = 3600_000;
 const KEEP_HOURS = 72;                 // 留 3 天
 const FLUSH_MS = 600_000;              // 隔多久落一次盘
 const FLUSH_EVERY = 200;               // 或者攒了多少下
+const SOON_MS = 5_000;                 // 140：记了一下，这么久以后落盘（赶在 DO 被收走之前）
 const KEY = 'stats';
 
 /** 谁在敲（普通请求）：只分大类 */
@@ -25,7 +29,9 @@ export function clientClass(req) {
 }
 
 export class Stats {
-  constructor(ctx, route, now = () => Date.now()) {
+  constructor(ctx, route, now = () => Date.now(), soonMs = SOON_MS) {
+    this.soonMs = soonMs;
+    this.timer = null;
     this.ctx = ctx;
     this.route = route;
     this.now = now;
@@ -51,6 +57,7 @@ export class Stats {
     hr[key] = (hr[key] || 0) + 1;
     this.dirty++;
     if (this.dirty >= FLUSH_EVERY || t - this.lastFlush >= FLUSH_MS || (this.lastHour && this.lastHour !== h)) this.flush();
+    else if (!this.timer) this.timer = setTimeout(() => { this.timer = null; this.flush(); }, this.soonMs);   // 140
     this.lastHour = h;
   }
 
