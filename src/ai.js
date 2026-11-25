@@ -280,7 +280,7 @@ export class Ai {
       woke: this.get('woke'), last_ok: this.get('ok'), last_error: this.get('err'),
       month, models: Object.fromEntries(cur.map((r) => [r.model, { n: r.n, err: r.err, in: r.inp, out: r.outp, cache_write: r.cw, cache_read: r.cr, usd: Math.round(r.usd * 10000) / 10000 }])),
       usd: sum(cur), prev: { month: prevMonth, usd: sum(prev), n: prev.reduce((a, r) => a + r.n, 0) },
-      today, day_max: this.dayMax, conf: this.get('conf'),
+      today, day_max: this.dayMax, conf: this.get('conf'), pcs: this.l.machines().map((x) => x.who),   // 谁在线：歇了、醒了只让一台去喊 Song
     };
   }
 }

@@ -193,6 +193,7 @@ test('quota: 503 quota, upstream left alone for the window, then one probe; good
   st = await (await pc(room, 'state')).json();
   assert.equal(st.rest, null);
   assert.ok(st.woke);
+  assert.deepEqual(st.pcs, ['desk']);
   assert.equal((await ask(room, cid)).status, 200);
   butler.close();
 });
