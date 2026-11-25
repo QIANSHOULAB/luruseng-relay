@@ -16,6 +16,7 @@
 import { Stats, clientClass } from './stats.js';
 import { guard } from './limit.js';
 import { viaDO } from './dofail.js';
+import { Ai } from './ai.js';
 
 const WHO = ['desk', 'handheld'];
 const ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
@@ -33,7 +34,7 @@ const MAX_ASK = 8_000_000;             // 一张照片（加密后、base64）�
 const MAX_PAIR = 8_000;
 const MAX_CONF = 8_000;
 
-export const LR_PATH = /^\/lr\/(hello|pair|ask|pc\/(?:ws|pub|state|revoke|conf|job|answer|stats))(?:\/([A-Za-z0-9_-]+))?$/;
+export const LR_PATH = /^\/lr\/(hello|pair|ask|pc\/(?:ws|pub|state|revoke|conf|job|answer|stats|ai\/(?:key|conf|state|client)))(?:\/([A-Za-z0-9_-]+))?$/;
 
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 const clampCap = (n) => { const v = Math.floor(Number(n)); return Number.isFinite(v) ? Math.min(CAP_MAX, Math.max(0, v)) : CAP; };
@@ -46,7 +47,7 @@ async function sha(text) {
 }
 
 /** 谁能用：不带 Origin 的（录入僧电脑版、大管家）、ALLOW_ORIGINS 里的网页（录入僧网页版）。别的网站一律不行 */
-function access(req, env) {
+export function access(req, env) {
   const origin = req.headers.get('Origin');
   if (!origin || origin === new URL(req.url).origin) return {};
   const allow = String(env.ALLOW_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -101,6 +102,7 @@ export class Luru {
     this.hold = new Set();               // 093：说了「满了」的那台，等它回下一件再给
     this.tick = null;
     this.stats = new Stats(ctx, 'lr');   // 125：额度账，见 stats.js
+    this.ai = new Ai(this, env);         // 167：Claude 通道（钥匙、门禁、记账），见 ai.js
   }
 
   getMeta(k) { const r = this.sql.exec('SELECT v FROM meta WHERE k = ?', k).toArray()[0]; return r ? r.v : null; }
@@ -226,6 +228,12 @@ export class Luru {
   /** 125：先记账再办。谁：大管家带 who（desk / handheld），录入僧网页、电脑版按 User-Agent 分大类 */
   async fetch(req) {
     const url = new URL(req.url);
+    const inner = url.pathname.match(/^\/lr\/_ai\/(gate|done|conf)$/);   // 167：只有 Worker 自己（src/ai.js）进得来：外面的 /lr/… 只转 LR_PATH 认得的
+    if (inner) {
+      const res = await this.ai.inner(inner[1], req);
+      this.stats.hit('ai ' + inner[1], 'ai', res.status);
+      return res;
+    }
     const m = url.pathname.match(LR_PATH);
     const w = url.searchParams.get('who') || req.headers.get('x-lr-who') || '';
     const who = m[1].startsWith('pc/') ? (WHO.includes(w) ? w : 'pc?') : clientClass(req);
@@ -328,6 +336,8 @@ export class Luru {
         return json({ ok: true });
       }
     }
+
+    if (what.startsWith('pc/ai/')) return this.ai.pc(what.slice(6), req);   // 167：放钥匙、模型表、看状态、登记设备
 
     if (what === 'pc/state' && method === 'GET') {
       const now = Date.now();

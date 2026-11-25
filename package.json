@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "node --test --test-concurrency=1 test/relay.test.mjs test/count.test.mjs test/dgj.test.mjs test/dgj-expire.test.mjs test/dgj-v3.test.mjs test/dgj-alarm.test.mjs test/luru.test.mjs test/stats.test.mjs test/dofail.test.mjs test/stats-flush.test.mjs"
+    "test": "node --test --test-concurrency=1 test/relay.test.mjs test/count.test.mjs test/dgj.test.mjs test/dgj-expire.test.mjs test/dgj-v3.test.mjs test/dgj-alarm.test.mjs test/luru.test.mjs test/stats.test.mjs test/dofail.test.mjs test/stats-flush.test.mjs test/ai.test.mjs"
   },
   "devDependencies": {
     "wrangler": "4.156.0"

@@ -12,6 +12,7 @@ const BATCH_RE = /^[A-Za-z0-9_-]{6,64}$/;
 import { handleCount, Quota } from './count.js';
 import { handleDgj, Box, DGJ_PATH } from './dgj.js';
 import { handleLuru, Luru, LR_PATH } from './luru.js';
+import { handleAi, AI_PATH } from './ai.js';
 import { Stats, clientClass } from './stats.js';
 import { guard } from './limit.js';
 import { viaDO } from './dofail.js';
@@ -42,6 +43,10 @@ export default {
     if (url.pathname.startsWith('/lr/')) {     // 录入僧 ⇄ 大管家 认照片（src/luru.js，089）：录入僧电脑版、大管家不带 Origin
       const l = url.pathname.match(LR_PATH);
       return l ? handleLuru(req, env, l) : new Response('not found', { status: 404 });
+    }
+    if (url.pathname.startsWith('/ai/')) {     // 167 Claude 通道：配上大管家的设备带 cid 来，站里补钥匙转给 Claude（src/ai.js）
+      const a = url.pathname.match(AI_PATH);
+      return a ? handleAi(req, env, a) : new Response('not found', { status: 404 });
     }
     if (url.pathname === '/count') {     // 铁件点钞机：免钥匙数工件（src/count.js）
       const h = cors(req, env);
