@@ -81,6 +81,7 @@ v3（施工单 070）：电脑、掌机两台大管家连同一个信箱，寄�
 
 - **钥匙只放站里**（Luru 那个 Durable Object 的存储），由大管家推上来，只写不读（`state` 只露尾 4 位）。设备上不放：录入僧在公司电脑的浏览器里跑，钥匙不能落到那台上。设备只带配对时拿到的 cid（089），撤一台（`pc/revoke`）不用换钥匙。
 - **站里只做带门禁的直通**：设备自己拼好 Claude Messages 请求（非流式），带 `x-lr-cid` 发到 `/ai/messages`；站里补上 `x-api-key`、`anthropic-version`，转给 `api.anthropic.com/v1/messages`，状态码和正文原样回。
+- **限速头（施工单 180）**：上游给了就原样带回 `retry-after`、`anthropic-ratelimit-requests-*`、`-input-tokens-*`、`-output-tokens-*`、`-tokens-*`（别的上游头一个不带，上游没给不补），网页跨域经 `Access-Control-Expose-Headers` 读得到。设备照它排队。
 - **代价（为「钥匙不下设备」换来的）**：照片经过站里时是明文。只在内存里转一手：请求体直接流给上游，不存、不拆、不记日志；回答也不存，只从里面读 usage 记账。
 - **门禁**：cid 在配对表里、没被撤（403）；每个 cid 一天最多 400 次（新加坡时间，`AI_DAY_MAX`，超了 429 `{why:"day"}`）；正文最大 10MB（`AI_MAX_BYTES`，413），没 Content-Length 411；站里没钥匙 503 `{why:"nokey"}`。
 - **额度用完**：上游回 400 且 message 带 credit balance（或者 402），站里记成「歇着」：6 小时里（`AI_REST_MS`）所有 `/ai/messages` 直接回 503 `{why:"quota", until}`，不打上游；过了 6 小时放一个真请求去试（同时只放一个），成了就醒，没成再歇 6 小时。歇了、醒了在大管家的 WebSocket 上推 `{"t":"ai","what":"rest"|"woke"}`。

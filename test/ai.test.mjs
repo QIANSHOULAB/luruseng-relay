@@ -14,7 +14,7 @@ let dev, BASE;
 
 // ---------------------------------------------------------------- 假的 Claude
 const seen = [];                 // 上游收到的：{key, version, body}
-const next = [];                 // 接下来怎么回：[status, body]；空了就回成功
+const next = [];                 // 接下来怎么回：[status, body, headers?]；空了就回成功
 const OK = (model = 'claude-opus-5-5', usage = { input_tokens: 1000, output_tokens: 200, cache_creation_input_tokens: 600, cache_read_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 600, ephemeral_1h_input_tokens: 0 } }) =>
   [200, { id: 'msg_x', type: 'message', role: 'assistant', model, content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: '{"records":[]}' }], stop_reason: 'end_turn', usage }];
 const up = http.createServer((req, res) => {
@@ -22,8 +22,8 @@ const up = http.createServer((req, res) => {
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
     seen.push({ key: req.headers['x-api-key'], version: req.headers['anthropic-version'], body: Buffer.concat(chunks).toString() });
-    const [st, body] = next.length ? next.shift() : OK();
-    res.writeHead(st, { 'content-type': 'application/json' });
+    const [st, body, extra] = next.length ? next.shift() : OK();
+    res.writeHead(st, { 'content-type': 'application/json', ...(extra || {}) });
     res.end(typeof body === 'string' ? body : JSON.stringify(body));
   });
 });
@@ -158,6 +158,30 @@ test('upstream errors come back as they are and are noted (no content kept)', as
   assert.match(st.last_error.msg, /workspace-id/);
   assert.equal(st.rest, null);
   assert.equal(st.models['(错)'].err, 2);
+});
+
+test('rate limit headers come back (only those), pages can read them', async () => {
+  const { room, cid } = await setup();
+  const limits = {
+    'retry-after': '7', 'anthropic-ratelimit-requests-limit': '50', 'anthropic-ratelimit-requests-remaining': '49',
+    'anthropic-ratelimit-requests-reset': '2026-11-26T03:00:00Z', 'anthropic-ratelimit-input-tokens-remaining': '8000',
+    'anthropic-ratelimit-input-tokens-reset': '2026-11-26T03:00:30Z', 'anthropic-ratelimit-output-tokens-limit': '8000',
+    'anthropic-ratelimit-tokens-remaining': '90000',
+  };
+  const others = { 'x-secret-upstream': 'no', 'request-id': 'req_x', 'anthropic-organization-id': 'org', 'set-cookie': 'a=1', 'anthropic-priority-input-tokens-limit': '5' };
+  next.push([429, { type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } }, { ...limits, ...others }]);
+  const r = await onDevice(room, 'messages', { method: 'POST', cid, body: MSG, origin: 'https://qianshoulab.github.io' });
+  assert.equal(r.status, 429);
+  for (const [k, v] of Object.entries(limits)) assert.equal(r.headers.get(k), v, k);
+  for (const k of Object.keys(others)) assert.equal(r.headers.get(k), null, k);
+  const exposed = r.headers.get('Access-Control-Expose-Headers').toLowerCase().split(',').map((s) => s.trim());
+  for (const k of Object.keys(limits)) assert.ok(exposed.includes(k), 'exposed ' + k);
+  next.push([200, OK()[1], { 'anthropic-ratelimit-input-tokens-remaining': '123' }]);
+  const ok = await ask(room, cid);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers.get('anthropic-ratelimit-input-tokens-remaining'), '123');
+  assert.equal(ok.headers.get('retry-after'), null);                                // 上游没给就不补
+  assert.equal((await ask(room, cid)).headers.get('anthropic-ratelimit-requests-limit'), null);
 });
 
 test('quota: 503 quota, upstream left alone for the window, then one probe; good probe wakes it', async () => {

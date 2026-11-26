@@ -2,6 +2,7 @@
 // - 钥匙只放这里（Luru 那个 Durable Object 的存储），由大管家推上来；设备上不放。设备只有配对时拿到的 cid（089），撤一台不用换钥匙。
 // - 这里只做带门禁的直通：设备自己拼好 Claude Messages 请求，带 cid 发到 /ai/messages；站里补上钥匙，转给 api.anthropic.com，原样回。
 //   代价：照片经过站里时是明文。只在内存里转一手：请求体直接流过去，不存、不拆、不记内容。
+//   回答里只多带上游的限速头（retry-after、anthropic-ratelimit-requests/input-tokens/output-tokens/tokens-*，180）。
 // - 门禁：cid 在 clients 表里、没被撤；每个 cid 一天最多 AI_DAY_MAX 次（新加坡时间的一天）；正文最大 AI_MAX_BYTES。
 // - 额度用完（上游 400 且 message 带 credit balance，或者 402）：记成「歇着」，6 小时里 /ai/messages 直接回 503 {why:"quota"}，不打上游；
 //   过了 6 小时放一个真请求去试（同一时间只放一个），成了就醒，没成再歇 6 小时。歇了、醒了都在大管家的 WebSocket 上说一声 {"t":"ai"}。
@@ -29,6 +30,11 @@ const REST_MS = 6 * 3600_000;          // 额度用完歇多久再试
 const PROBE_MS = 300_000;              // 试探的那一个这么久没回，再放下一个
 const UP_MS = 240_000;                 // 等上游最多多久（Opus low 认一张一般 10～60 秒）
 const SGT = 8 * 3600_000;
+
+// 180：上游的限速头原样带回给设备（录入僧、铁屑江湖照它排队）。只带这几样，别的上游头一个不带；上游没给就不补。
+const LIMIT_RE = /^(retry-after|anthropic-ratelimit-(requests|input-tokens|output-tokens|tokens)-[a-z0-9-]+)$/;
+const LIMIT_NAMES = ['retry-after', ...['requests', 'input-tokens', 'output-tokens', 'tokens']
+  .flatMap((k) => ['limit', 'remaining', 'reset'].map((s) => `anthropic-ratelimit-${k}-${s}`))];
 
 // 每百万 tokens 的美元价（Claude 价目表，11-25）：输入、输出、缓存读。缓存写 = 输入 × 1.25（5 分钟）/ × 2（1 小时）。
 export const PRICES = {
@@ -76,7 +82,10 @@ function errOf(text) {
 export async function handleAi(req, env, m) {
   const h = access(req, env);
   if (!h) return new Response('origin not allowed', { status: 403 });
-  if (h['Access-Control-Allow-Origin']) h['Access-Control-Allow-Headers'] = 'Content-Type, x-lr-cid, anthropic-version, anthropic-beta';
+  if (h['Access-Control-Allow-Origin']) {
+    h['Access-Control-Allow-Headers'] = 'Content-Type, x-lr-cid, anthropic-version, anthropic-beta';
+    h['Access-Control-Expose-Headers'] = LIMIT_NAMES.join(', ');   // 180：网页跨域要读得到限速头
+  }
   const out = (res) => { for (const [k, v] of Object.entries(h)) res.headers.set(k, v); return res; };
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: h });
   const what = m[1];
@@ -110,6 +119,7 @@ export async function handleAi(req, env, m) {
   const ver = req.headers.get('anthropic-version');
   const beta = req.headers.get('anthropic-beta');
   let status = 0, text = '', type = 'application/json';
+  const limits = {};
   try {
     const r = await fetch(up, {
       method: 'POST',
@@ -123,6 +133,7 @@ export async function handleAi(req, env, m) {
     });
     status = r.status;
     type = r.headers.get('content-type') || type;
+    for (const [k, v] of r.headers) if (LIMIT_RE.test(k)) limits[k] = v;
     text = await r.text();
   } catch (e) {
     text = JSON.stringify({ type: 'error', error: { type: 'relay_upstream', message: String(e && e.message || e).slice(0, 200) } });
@@ -136,7 +147,7 @@ export async function handleAi(req, env, m) {
   } else note.err = errOf(text);
   await inner('done', note);            // 记账：一下快的
   if (quota) return out(json({ why: 'quota', until: Date.now() + num(env, 'AI_REST_MS', REST_MS) }, 503));
-  return out(new Response(text, { status, headers: { 'content-type': type, 'cache-control': 'no-store' } }));
+  return out(new Response(text, { status, headers: { ...limits, 'content-type': type, 'cache-control': 'no-store' } }));
 }
 
 // ------------------------------------------------------------------ Durable Object 这头（Luru 里用）
