@@ -12,7 +12,10 @@
 //   认一张最多等 LR_ASK_MS（5 分钟），从大管家取走那一刻算，站里排队的时间不算；排队最多 LR_QUEUE_MS（15 分钟）。
 //   在线的都报 0（打游戏）：直接回 503 cant，录入僧换 Gemini。
 // - 撤掉的、站里不认识的录入僧发来的照片：直接回 403，录入僧退回 Gemini。
-
+// - 184 录入僧越用越准：配上的录入僧把人改过的格子（加密的一包）POST /lr/learn 交给大管家，跟配对一样交给下一台在线的
+//   （先电脑），不占认字的空位；站里只转密文、不存。没大管家在线回 503，录入僧自己排着下回再发。
+//   大管家每晚学出「常错清单」和「不用标红」，POST /lr/pc/learn 放上来（看字的提醒，不带人名；只有配上的录入僧读得到），
+//   录入僧开工时 GET /lr/learn/list（头 x-lr-cid 或 ?cid=）读。
 import { Stats, clientClass } from './stats.js';
 import { guard } from './limit.js';
 import { viaDO } from './dofail.js';
@@ -33,8 +36,11 @@ const LOCK_MS = 3600_000;              // 锁多久
 const MAX_ASK = 8_000_000;             // 一张照片（加密后、base64）最大
 const MAX_PAIR = 8_000;
 const MAX_CONF = 8_000;
+const LEARN_MS = 60_000;               // 184：交一包改动最多等大管家多久
+const MAX_LEARN = 4_000_000;           // 184：一包改动（加密后、base64）最大；录入僧那头每包控制在 3 MB 以内
+const MAX_LIST = 200_000;              // 184：常错清单 + 不用标红，最大
 
-export const LR_PATH = /^\/lr\/(hello|pair|ask|pc\/(?:ws|pub|state|revoke|conf|job|answer|stats|ai\/(?:key|conf|state|client)))(?:\/([A-Za-z0-9_-]+))?$/;
+export const LR_PATH = /^\/lr\/(hello|pair|ask|learn|pc\/(?:ws|pub|state|revoke|conf|job|answer|stats|learn|ai\/(?:key|conf|state|client)))(?:\/([A-Za-z0-9_-]+))?$/;
 
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 const clampCap = (n) => { const v = Math.floor(Number(n)); return Number.isFinite(v) ? Math.min(CAP_MAX, Math.max(0, v)) : CAP; };
@@ -54,7 +60,7 @@ export function access(req, env) {
   if (!allow.includes('*') && !allow.includes(origin)) return null;
   return {
     'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '86400', Vary: 'Origin',
+    'Access-Control-Allow-Headers': 'Content-Type, x-lr-cid', 'Access-Control-Max-Age': '86400', Vary: 'Origin',
   };
 }
 
@@ -95,6 +101,7 @@ export class Luru {
     this.askMs = num('LR_ASK_MS', ASK_MS);
     this.queueMs = num('LR_QUEUE_MS', QUEUE_MS);
     this.pairMs = num('LR_PAIR_MS', PAIR_MS);
+    this.learnMs = num('LR_LEARN_MS', LEARN_MS);
     this.fails = num('LR_FAILS', FAILS);
     this.lockMs = num('LR_LOCK_MS', LOCK_MS);
     this.jobs = new Map();               // 正在等大管家回的活：只在内存里，回了就扔
@@ -303,6 +310,32 @@ export class Luru {
       return json({ ok: true, n: r.answer.n, ct: r.answer.ct, by: r.by, qms: r.qms });
     }
 
+    if (what === 'learn' && !arg && method === 'POST') {          // 184：一包人改过的格子，交给大管家（先电脑），回执原样带回
+      if (Number(req.headers.get('Content-Length') || 0) > MAX_LEARN) return json({ error: 'too big' }, 413);
+      const text = await req.text();
+      if (text.length > MAX_LEARN) return json({ error: 'too big' }, 413);
+      let b;
+      try { b = JSON.parse(text); } catch (e) { return json({ error: 'bad json' }, 400); }
+      if (!b || !ID_RE.test(b.cid || '') || !B64_RE.test(b.n || '') || !B64_RE.test(b.ct || '')) return json({ error: 'bad learn' }, 400);
+      const c = this.client(b.cid);
+      if (!c) return json({ unknown: true }, 403);
+      if (c.revoked) return json({ revoked: true }, 403);
+      if (!this.machines().length) return json({ off: true }, 503);
+      const r = await this.run('learn', b.cid, ip, { cid: b.cid, n: b.n, ct: b.ct }, this.learnMs);
+      if (r.off) return json({ off: true }, 503);
+      if (r.timeout) return json({ timeout: true }, 504);
+      if (!r.answer.ok) return json({ ok: false, forget: Boolean(r.answer.forget), by: r.by });
+      return json({ ok: true, n: r.answer.n, ct: r.answer.ct, by: r.by });
+    }
+
+    if (what === 'learn' && arg === 'list' && method === 'GET') {   // 184：配上的录入僧读常错清单、不用标红
+      const cid = req.headers.get('x-lr-cid') || url.searchParams.get('cid') || '';
+      if (!ID_RE.test(cid)) return json({ unknown: true }, 403);
+      const c = this.client(cid);
+      if (!c) return json({ unknown: true }, 403);
+      if (c.revoked) return json({ revoked: true }, 403);
+      return json({ ok: true, learn: this.learnList() });
+    }
     // ------------------------------------------------------------------ 大管家这头
     if (!(await this.pcOk(req))) return json({ error: 'not the butler' }, 403);
     const who = url.searchParams.get('who') || req.headers.get('x-lr-who') || '';
@@ -334,6 +367,23 @@ export class Luru {
         if (!t || t.length > MAX_CONF) return json({ error: 'bad conf' }, 400);
         this.setMeta('conf', t);
         return json({ ok: true });
+      }
+    }
+
+    if (what === 'pc/learn') {           // 184：大管家放上 / 看一眼现在那版常错清单；{clear:true} = 撤掉，录入僧照旧
+      if (method === 'GET') return json({ learn: this.learnList() });
+      if (method === 'POST') {
+        const t = await req.text();
+        if (!t || t.length > MAX_LIST) return json({ error: 'too big' }, 413);
+        let b;
+        try { b = JSON.parse(t); } catch (e) { return json({ error: 'bad json' }, 400); }
+        if (b && b.clear === true) { this.sql.exec('DELETE FROM meta WHERE k = ?', 'learn'); return json({ ok: true, learn: null }); }
+        const okList = (x) => x && typeof x === 'object' && !Array.isArray(x) && Object.values(x).every((v) => Array.isArray(v) && v.every((l) => typeof l === 'string'));
+        if (!b || !Number.isInteger(b.ver) || b.ver <= 0 || !okList(b.lists) || !Array.isArray(b.nored)) return json({ error: 'bad learn' }, 400);
+        const nored = b.nored.filter((r) => r && typeof r === 'object').map((r) => ({ cat: String(r.cat ?? ''), col: String(r.col ?? ''), value: String(r.value ?? '') }));
+        const learn = { ver: b.ver, at: Date.now(), lists: b.lists, nored };
+        this.setMeta('learn', JSON.stringify(learn));
+        return json({ ok: true, ver: learn.ver });
       }
     }
 
@@ -385,6 +435,11 @@ export class Luru {
     }
     return new Response('not found', { status: 404 });
   }
+
+  /** 184：现在那版常错清单（没有 / 坏了 = null） */
+  learnList() { const t = this.getMeta('learn'); try { return t ? JSON.parse(t) : null; } catch (e) { return null; } }
+
+  client(cid) { return this.sql.exec('SELECT revoked FROM clients WHERE cid = ?', cid).toArray()[0]; }
 
   salt() {
     let s = this.getMeta('salt');

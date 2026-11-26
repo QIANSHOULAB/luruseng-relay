@@ -73,7 +73,21 @@ v3（施工单 070）：电脑、掌机两台大管家连同一个信箱，寄�
 | 大管家 | 连上、收活 | WebSocket `pc/ws?who=…`，推 `{t:"job", id, kind}`；`GET pc/job/<id>` 取（先来先得，晚了 409）；`POST pc/answer/<id>` 回 |
 | 大管家 | 公钥、共用设置、配对表、撤 | `POST pc/pub`、`GET/POST pc/conf`（大管家自己加密的）、`GET pc/state`、`POST pc/revoke {cid}|{all:true}` |
 
-网页只能碰 `hello`、`pair`、`ask`；`pc/…` 带 Origin 的一律 403。
+网页只能碰 `hello`、`pair`、`ask`、`learn`；`pc/…` 带 Origin 的一律 403。
+
+### 录入僧越用越准（施工单 184）
+
+配上大管家的录入僧（填过暗号的）把人在核对里动过的格子（改了、点「对的」、选了猜的值，还有那一页缩过的照片）打成一包，用配对时拿到的那把钥匙加密，交给大管家。大管家攒着，每晚学出一版「常错清单」（看字的提醒）和「不用标红」，放回这里；录入僧开工时读，加进认字的提示里。
+
+- 一包改动跟配对一样，交给下一台在线的大管家（先电脑、8 秒没来取转掌机），**不占认字的空位**（打游戏报 0 也收）；站里只转密文、不存。没大管家在线回 503，录入僧自己排着，下回再发，收到回执才删。
+- 清单是明文放在这里的（看字的提醒，大管家写的时候不带人名、工号）；只有配上、没撤的录入僧读得到（`x-lr-cid` 头，网页也可以 `?cid=`）。
+- 不算「用了一次」（`pc/state` 的 uses 只数认字）。
+
+| 谁 | 做什么 | 怎么发 |
+|---|---|---|
+| 录入僧 | 交一包改动 | `POST /lr/learn` `{cid, n, ct}`（AES-GCM，附加数据 `luru/learn/<cid>`，最大 4 MB）→ `{ok:true, n, ct, by}`（回执，附加数据 `luru/learned/<cid>`）/ `{ok:false, forget}`；不认识、撤了 403；不在 503 `{off}`；60 秒没回 504（`LR_LEARN_MS`）；太大 413 |
+| 录入僧 | 读常错清单 | `GET /lr/learn/list`（头 `x-lr-cid`）→ `{ok:true, learn: null \| {ver, at, lists: {类别: [行…], "*": [行…]}, nored: [{cat, col, value}]}}`；不认识、撤了 403 |
+| 大管家 | 放上 / 撤掉 / 看一眼 | `POST pc/learn {ver, lists, nored}`（最大 200 KB）/ `POST pc/learn {clear:true}` / `GET pc/learn` |
 
 ## Claude 通道（/ai，施工单 167）
 
