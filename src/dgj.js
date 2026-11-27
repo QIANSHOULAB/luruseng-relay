@@ -7,6 +7,7 @@
 // - 070（接口 v3）：电脑、掌机都连着（as=pc&who=desk、as=pc&who=handheld）时，寄给大管家的每封信只交给一台：先电脑、后掌机。
 //   拿到的那台马上回「接了」（{"t":"take"}）；20 秒没回，或者接了以后断了（10 秒没回来）、不 ping 了（90 秒），转给下一台在线的。
 //   接了的信，别的机器连上来也不给，免得两台都干。不带 who 的老掌机照 v2：推过去就算它接了，排在最后。
+// - 240：拿到的那台说「不是我的」（{"t":"pass"}，比如电脑开着时手机写给掌机的遥控），马上转给下一台，不用等 20 秒。
 //   回手机的信带 re=<请求的 id>：同一个请求已经回过一份，第二份不收。
 // - 大管家长连着也不费额度：WebSocket 休眠那一套（acceptWebSocket + 自动回 pong），ping 不叫醒它，空着不算时长。
 // - 照片、配音 mp3 几 MB 一封：一行存不下就拆成几片存，取的时候拼回一整封。每个信箱有上限，防止被灌爆。
@@ -385,13 +386,13 @@ export class Box {
     return new Response('not found', { status: 404 });
   }
 
-  async webSocketMessage(ws, message) {  // ping 自动回了不进这里；这里只认 ack、state、take
+  async webSocketMessage(ws, message) {  // ping 自动回了不进这里；这里只认 ack、state、take、pass
     const a0 = ws.deserializeAttachment() || {};
     const wh = a0.who || a0.role || '?';
     if (typeof message !== 'string' || message.length > 512) { this.stats.hit('wsmsg bad', wh); return; }
     let m;
     try { m = JSON.parse(message); } catch (e) { this.stats.hit('wsmsg bad', wh); return; }
-    this.stats.hit('wsmsg ' + (m && ['ack', 'state', 'take'].includes(m.t) ? m.t : 'other'), wh);
+    this.stats.hit('wsmsg ' + (m && ['ack', 'state', 'take', 'pass'].includes(m.t) ? m.t : 'other'), wh);
     if (m && m.t === 'ack' && Number.isSafeInteger(m.seq)) {
       this.remove(m.seq);
       await this.schedule();
@@ -407,6 +408,14 @@ export class Box {
         back = { t: 'took', seq: m.seq };
       } else back = { t: 'nope', seq: m.seq, by: c ? (c.who || 'pc') : null };   // 晚了，已经转给别的机器
       try { ws.send(JSON.stringify(back)); } catch (e) { /* 断了 */ }
+      await this.schedule();
+    } else if (m && m.t === 'pass' && Number.isSafeInteger(m.seq)) {   // 240：「不是我的」：当它等「接了」已经等满了，马上转给下一台
+      const who = a0.who || '';
+      const c = this.claim(m.seq);
+      if (who && c && c.who === who && !c.took && this.row(m.seq)) {
+        this.sql.exec('UPDATE claims SET at = ? WHERE seq = ?', Date.now() - this.takeMs - 1, m.seq);
+        this.push(this.dispatch());       // 有下一台就交给它；没有就还是它的（跟等满 20 秒一样）
+      }
       await this.schedule();
     }
   }

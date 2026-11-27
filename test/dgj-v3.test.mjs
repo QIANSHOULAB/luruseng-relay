@@ -72,6 +72,47 @@ test('the desk does not say it took it in time: passed on to the handheld, the l
   stop(); desk.close(); hand.close();
 });
 
+test('240: the desk says the letter is not its own (pass): the handheld gets it at once, not after the wait', async () => {
+  const b = newBox();
+  const desk = await pc(b, 'desk');
+  const hand = await pc(b, 'handheld');
+  const stop = keepAlive(desk, hand);
+  const { seq } = await (await put(b, 'pc', 'REQ-PASS-1')).json();
+  await desk.next((m) => m.t === 'msg');
+  const t0 = Date.now();
+  desk.send(JSON.stringify({ t: 'pass', seq }));
+  assert.equal((await hand.next((m) => m.t === 'msg', 8000)).item.seq, seq);
+  assert.ok(Date.now() - t0 < 1000, `passed on after ${Date.now() - t0} ms`);
+  take(hand, seq);
+  await hand.next((m) => m.t === 'took' && m.seq === seq);
+  hand.send(JSON.stringify({ t: 'pass', seq }));                      // the one that took it cannot pass it any more
+  take(desk, seq);
+  assert.equal((await desk.next((m) => m.t === 'nope' && m.seq === seq)).by, 'handheld');
+  stop(); desk.close(); hand.close();
+});
+
+test('240: a pass with nobody next waits for the next machine; a pass from one that does not hold the letter is ignored', async () => {
+  const b = newBox();
+  const desk = await pc(b, 'desk');
+  const stop = keepAlive(desk);
+  const { seq } = await (await put(b, 'pc', 'REQ-PASS-2')).json();
+  await desk.next((m) => m.t === 'msg');
+  desk.send(JSON.stringify({ t: 'pass', seq }));                      // nobody next: nothing moves
+  await sleep(300);
+  const hand = await pc(b, 'handheld');
+  const stop2 = keepAlive(hand);
+  const hello = await hand.next((m) => m.t === 'hello');
+  assert.deepEqual((hello.items || []).map((i) => i.seq), [seq]);    // the next one to come gets it
+  const { seq: seq2 } = await (await put(b, 'pc', 'REQ-PASS-3')).json();
+  await desk.next((m) => m.t === 'msg' && m.item.seq === seq2);
+  hand.send(JSON.stringify({ t: 'pass', seq: seq2 }));                // not the handheld's: ignored
+  await sleep(300);
+  assert.equal(letters(hand).filter((m) => m.item.seq === seq2).length, 0);
+  take(desk, seq2);
+  await desk.next((m) => m.t === 'took' && m.seq === seq2);
+  stop(); stop2(); desk.close(); hand.close();
+});
+
 test('the desk took it and dropped off: after the grace it goes to the handheld; the desk coming back does not get it', async () => {
   const b = newBox();
   const desk = await pc(b, 'desk');
